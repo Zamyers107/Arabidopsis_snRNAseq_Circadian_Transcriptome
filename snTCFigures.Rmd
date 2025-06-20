@@ -1,0 +1,1027 @@
+---
+title: "snTC Figure 1 Analyses"
+author: "Zach Myers"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.show = "asis",
+  dev = "png"
+)
+options(future.globals.maxSize = 9e10)
+```
+
+## Packages
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(SCpubr)
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+library(clusterProfiler)
+library(org.At.tair.db)
+library(scales)
+library(reshape2)
+library(ggplot2)
+library(VennDiagram)
+library(grid)
+library(gridExtra)
+library(ggplotify)
+library(cowplot)
+```
+
+## Directories
+```{r dirs}
+output_dir <- "./Fig1"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+```
+
+## Load reference data
+```{r reference-data}
+AtCycling <- read_excel("./Romanowski.cyclinggenes.csv") %>% 
+  dplyr::select(Gene_ID) %>% 
+  dplyr::rename(gid = Gene_ID)
+
+AtAllSynonyms <- read_tsv("./features.tsv",
+                          col_names = c("gid","synonym","extra"))
+
+AtCycling <- inner_join(AtCycling, AtAllSynonyms, by = "gid")
+
+AtPCAmarkers <- read_csv("/users/8/myers998/snTC/manuscript/AtLeafMarkerGenes.csv",
+                         col_names = c("gid","Desc","p_val","avg_log2FC",
+                                       "pct.1","pct.2","p_val_adj",
+                                       "cluster","celltype")) %>% 
+  filter(p_val_adj < 0.01, pct.1 > 0.1) %>% 
+  inner_join(AtAllSynonyms, by = "gid") %>% 
+  dplyr::select(gid, celltype)
+
+integrated_seurat15k <- readRDS("./20241217.snTC.DROP24B.Subclustered.c8c12.RDS")
+
+integrated_seurat15k <- AddMetaData(integrated_seurat15k,
+                                    metadata = gsub("A|B|C|d$", "", integrated_seurat15k$orig.ident),
+                                    col.name = "timepoint")
+
+# Cluster → cell‑type mappings
+ct.predictions <- tribble(
+  ~cluster,  ~celltype,
+  "0",      "Photosynthesizing",
+  "1",      "Photosynthesizing",
+  "5",      "Vascular",
+  "2",      "Mesophyll, Epidermis",
+  "11",     "Mesophyll, Epidermis",
+  "3",      "Mesophyll, Epidermis",
+  "4",      "Mesophyll, Epidermis",
+  "12_2",   "Phloem Parenchyma",
+  "10",     "Vascular",
+  "9",      "Dividing",
+  "14",     "Guard Cell",
+  "6",      "Phloem Companion Cell",
+  "12_0",   "Mesophyll, Epidermis",
+  "7",      "Vascular",
+  "8_0",    "Dividing",
+  "12_1",   "Dividing",
+  "13",     "Trichome, Epidermis",
+  "8_1",    "Vascular",
+  "16",     "Root Hair",
+  "15",     "Xylem"
+)
+
+integrated_seurat15k$sub.cluster |> as.character() -> clust_vec
+integrated_seurat15k <- AddMetaData(
+  integrated_seurat15k,
+  metadata = tibble(cluster = clust_vec) |>
+               left_join(ct.predictions, by = "cluster")
+)
+
+snTC.NoSoup.markers <- read_tsv("./20241217.snTC.DROP24B.Subclustered.c8c12.Markers.tsv")
+
+colnames(snTC.NoSoup.markers) <- c("p_val","avg_log2FC","pct.1","pct.2","p_val_adj","cluster","gid")
+snTC_markers <- subset(snTC.NoSoup.markers, p_val_adj < 0.01 & pct.1 > 0.1)
+
+
+sub.colors <- c(
+  "8_0"="#4682B4","9"="#4661B4","12_1"="#4C46B4","5"="#6D46B4","6"="#8E46B4",
+  "7"="#AF46B4","8_1"="#B44698","10"="#B44677","12_2"="#B44656","15"="#B45746",
+  "0"="#B47846","1"="#B49946","3"="#AEB446","4"="#8DB446","11"="#6CB446",
+  "2"="#4BB446","12_0"="#46B462","13"="#46B483","14"="#46B4A4","16"="#46A3B4"
+)
+
+celltype_colors <- c(
+  "Photosynthesizing"="#B47846","Mesophyll, Epidermis"="#AEB446","Root Hair"="#46A3B4",
+  "Dividing"="#4661B4","Vascular"="#AF46B4","Guard Cell"="#46B483",
+  "Phloem Companion Cell"="#B45746","Xylem"="#B44677","Phloem Parenchyma"="#6D46B4",
+  "Trichome, Epidermis"="#4BB446"
+)
+
+cluster_order <- c("0","1","3","4","11","2","12_0","13","14","16",
+                   "8_0","9","12_1","5","6","7","8_1","10","12_2","15")
+
+clade_df <- read_csv("../20250417.WGCNA.GenesClustersCladesBreakdown_long_filtered.csv")
+edges_df <- read_tsv("../unshuffled_top95_all_clusters.tsv")
+```
+
+# Figure 1
+
+## Figure 1A - Sampling Diagram
+#### Designed from scratch through Inkscape
+
+## Figure 1B – Proportion of circadian marker genes
+```{r fig1b, fig.width=7, fig.height=5}
+p <- AtPCAmarkers %>% 
+  group_by(celltype) %>% 
+  summarise(total_genes=n(),
+            circadian_genes=sum(gid %in% AtCycling$gid),
+            proportion_circadian=circadian_genes/total_genes,
+            .groups="drop") %>% 
+  ggplot(aes(y=reorder(celltype, proportion_circadian)))+
+  geom_bar(aes(x=1), stat="identity", fill="grey90", colour="grey70")+
+  geom_bar(aes(x=proportion_circadian), stat="identity", fill="darkslategray4")+
+  geom_vline(xintercept=c(0.25,0.5,0.75), linetype="dotted", colour="grey50")+
+  scale_x_continuous(limits=c(0,1), breaks=c(0.25,0.5,0.75))+
+  labs(x="Proportion of Marker Genes\nwith Circadian Expression", y=NULL)+
+  theme_minimal(base_size=14)+
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+p
+ggsave(file.path(output_dir,"20250602.FIG1B.ProportionCycling.pdf"), p, width=7, height=5)
+```
+
+## Figure 1C-D – UMAPs
+```{r fig1c, fig.width=8, fig.height=6}
+Idents(integrated_seurat15k) <- "sub.cluster"
+c.subcluster <- SCpubr::do_DimPlot(integrated_seurat15k, label = TRUE, colors.use = sub.colors,
+                                   label.size = 5, group.by = "sub.cluster", label.color = "white",
+                                   repel = TRUE, legend.nrow = 20, legend.icon.size = 8,
+                                   legend.text.face = "bold", label.fill = NULL, font.size = 16,
+                                   shuffle = FALSE, legend.byrow = FALSE, legend.position = "right",
+                                   legend.ncol = 1,
+                                   order = rev(c("0","1","3","4","11","2","12_0","13","14","16",
+                                                 "8_0","9","12_1","5","6","7","8_1","10","12_2","15")))
+c.subcluster
+ggsave(file.path(output_dir,"20250602.FIG1C.Clusters.pdf"), c.subcluster, width=8, height=6)
+```
+
+```{r fig1c-noleg, fig.width=8, fig.height=6}
+c.subcluster.NL <- c.subcluster + theme(legend.position="none")
+c.subcluster.NL
+ggsave(file.path(output_dir,"20250602.FIG1C.Clusters.NoLegend.pdf"), c.subcluster.NL, width=8, height=6)
+```
+
+```{r fig1c-celltype, fig.width=8, fig.height=6}
+c_cell <- SCpubr::do_DimPlot(integrated_seurat15k, label = TRUE, label.size = 7, group.by = "celltype",
+                        legend.position = "none", colors.use = celltype_colors, label.color = "white",
+                        repel = TRUE, legend.nrow = 4, legend.icon.size = 8, legend.text.face = "bold",
+                        label.fill = NULL, font.size = 12)
+c_cell
+ggsave(file.path(output_dir,"20250602.FIG1D.Celltypes.pdf"), c_cell, width=8, height=6)
+```
+
+## Figure 1C-D - QC Plots
+```{r qc-violin, fig.width=12, fig.height=6}
+e <- VlnPlot(integrated_seurat15k, features="nFeature_RNA",
+             group.by="celltype", cols=celltype_colors, pt.size=0) +
+  geom_hline(yintercept=1000, linetype="dashed")+
+  labs(x="", y="Genes expressed")+ theme(axis.text=element_text(size=16, face="bold"),
+                                         axis.title.y=element_text(size=18, face="bold"))
+e
+ggsave(file.path(output_dir,"20250602.FIG1D.RNAcounts.pdf"), e, width=12, height=6)
+```
+
+```{r qc-bar, fig.width=10, fig.height=6}
+f <- as.data.frame(table(Idents(integrated_seurat15k))) %>% 
+  setNames(c("SubCluster","Count")) %>% 
+  mutate(SubCluster=factor(SubCluster, levels=cluster_order)) %>% 
+  ggplot(aes(SubCluster, Count, fill=SubCluster))+
+  geom_col()+ geom_text(aes(label=Count), vjust=-0.5, size=5)+
+  scale_fill_manual(values=sub.colors)+
+  labs(y="Number of nuclei")+ theme_minimal(base_size=14)+
+  theme(axis.text.x = element_text(angle=45, hjust=1), legend.position="none")
+f
+ggsave(file.path(output_dir,"20250602.FIG1C.NucleiPerCluster.Bar.pdf"), f, width=10, height=6)
+```
+
+## Figure 1E – Literature marker heat‑map
+```{r heatmap, fig.width=10, fig.height=12}
+# Optional: custom color palette if not previously defined
+viridis_inferno_light_high <- viridis::viridis(100, option = "inferno")
+
+## Literature Markers
+LiteratureMarkers <- read_csv("/users/8/myers998/snTC/manuscript/LiteratureMarkers.snTCvalidation.csv") %>%
+  dplyr::select(celltype, gid)
+
+# Consolidate duplicate entries
+LiteratureMarkers <- LiteratureMarkers %>%
+  group_by(gid) %>%
+  summarize(celltype = paste(unique(celltype), collapse = ", "), .groups = "drop")
+
+gene_ids <- LiteratureMarkers$gid
+cell_types <- LiteratureMarkers$celltype
+
+# Subset the Seurat object for the genes of interest
+rna_data <- GetAssayData(integrated_seurat15k, assay = "RNA", slot = "data")
+subset_genes <- gene_ids[gene_ids %in% rownames(rna_data)]
+filtered_LiteratureMarkers <- LiteratureMarkers %>% filter(gid %in% subset_genes)
+
+# Aggregate expression data by sub.cluster
+cluster_averages <- AverageExpression(integrated_seurat15k, features = subset_genes, assay = "RNA", return.seurat = FALSE)
+cluster_averages <- cluster_averages$RNA
+
+# Reorder rows to match LiteratureMarkers and split by cell type
+heatmap_matrix <- cluster_averages[filtered_LiteratureMarkers$gid, ]
+row_annotation <- data.frame(CellType = filtered_LiteratureMarkers$celltype)
+rownames(row_annotation) <- filtered_LiteratureMarkers$gid
+
+# Adjust column labels
+colnames(heatmap_matrix) <- gsub("g", "", colnames(heatmap_matrix))  # Remove "g" from cluster labels
+col_order <- c("0", "1", "3", "4", "11", "2", "12-0", "13", "14", "16", 
+               "8-0", "9", "12-1", "5", "6", "7", "8-1", "10", "12-2", "15")
+valid_order <- col_order[col_order %in% colnames(heatmap_matrix)]
+heatmap_matrix <- heatmap_matrix[, valid_order]
+
+# Generate colors for the cell types
+celltype_colors <- setNames(RColorBrewer::brewer.pal(n = length(unique(filtered_LiteratureMarkers$celltype)), "Set3"),
+                            unique(filtered_LiteratureMarkers$celltype))
+
+pheatmap(
+  heatmap_matrix,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  scale = "row",
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = viridis_inferno_light_high,
+  main = "Expression Heatmap",
+  annotation_row = row_annotation,
+  annotation_colors = list(CellType = celltype_colors),
+  fontsize_row = 10,
+  fontsize_col = 12,
+  fontsize = 14,
+  cellwidth = 14
+)
+
+# Export as PDF
+pdf(file.path(output_dir, "20250606.FIG1E.LiteratureMarkersHeatmap.pdf"), width = 10, height = 12)
+
+pheatmap(
+  heatmap_matrix,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  scale = "row",
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = viridis_inferno_light_high,
+  main = "Expression Heatmap",
+  annotation_row = row_annotation,
+  annotation_colors = list(CellType = celltype_colors),
+  fontsize_row = 10,
+  fontsize_col = 12,
+  fontsize = 14,
+  cellwidth = 14
+)
+
+dev.off()
+
+```
+
+## Figure 1F – GO enrichment (BP)
+```{r go-plot, fig.width=16, fig.height=16}
+# Alias to match original variable name
+snTC.Sigmarkers <- snTC_markers
+
+clusters            <- unique(snTC.Sigmarkers$cluster)
+enrichment_results  <- list()
+
+# Split genes by cluster
+gene_list <- split(snTC.Sigmarkers$gid, snTC.Sigmarkers$cluster)
+
+# --- GO enrichment (BP) --------------------------------------------------
+for (cl in clusters) {
+  genes <- gene_list[[as.character(cl)]]
+  
+  enrichment_bp <- enrichGO(
+    gene          = genes,
+    OrgDb         = org.At.tair.db,
+    keyType       = "TAIR",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 0.05
+  )
+  
+  enrichment_results[[paste0(cl, "_BP")]] <- enrichment_bp
+}
+
+## ---------------- Post-processing ---------------------------------------
+bp_list <- lapply(enrichment_results, as.data.frame)[grep("_BP$", names(enrichment_results))]
+
+all_bp <- do.call(rbind, lapply(names(bp_list), function(nm) {
+  df <- bp_list[[nm]]
+  df$cluster <- gsub("_BP$", "", nm)
+  df
+})) %>% 
+  filter(!is.na(Description))          # <-- REMOVE NA descriptions
+
+# Keep q-adjust < 0.05
+all_bp_filtered_export <- all_bp %>% filter(p.adjust < 0.05)
+
+# Write TSV for record
+write_tsv(all_bp_filtered_export,
+          file.path(output_dir, "20250606.ClusterGO_BP_All_p05.tsv"))
+
+## Plotting summary (BP only) ##
+# Keep top 3 terms per cluster
+summary_list <- lapply(names(bp_list), function(cluster_name) {
+  df <- bp_list[[cluster_name]] %>%
+    arrange(qvalue) %>%
+    slice_head(n = 3)
+  df$cluster <- gsub("_BP", "", cluster_name)
+  df
+})
+
+summary_table <- bind_rows(summary_list) %>%
+  mutate(
+    log_qvalue = -log10(qvalue),
+    GeneRatio_numeric = sapply(strsplit(GeneRatio, "/"), function(x)
+      as.numeric(x[1]) / as.numeric(x[2]))
+  )
+
+# Set cluster order (replace with your order if needed)
+cluster_order <- unique(summary_table$cluster)
+summary_table$cluster <- factor(summary_table$cluster, levels = cluster_order)
+
+# Get full BP rows corresponding to those top terms
+top_ids <- unique(summary_table$ID)
+all_bp_filtered <- all_bp %>%
+  filter(ID %in% top_ids) %>%
+  mutate(
+    log_qvalue = -log10(qvalue),
+    GeneRatio_numeric = sapply(strsplit(GeneRatio, "/"), function(x)
+      as.numeric(x[1]) / as.numeric(x[2])),
+    cluster = factor(cluster, levels = cluster_order)
+  )
+
+# Desired x-axis cluster order (left-to-right)
+cluster_order <- c("0","1","3","4","11","2","12_0","13","14","16",
+                   "8_0","9","12_1","5","6","7","8_1","10","12_2","15")
+
+# Apply as factor levels for cluster
+all_bp_filtered$cluster <- factor(all_bp_filtered$cluster, levels = cluster_order)
+summary_table$cluster <- factor(summary_table$cluster, levels = cluster_order)
+
+
+# Order by cluster and qvalue to set y-axis
+desc_levels <- summary_table %>%
+  arrange(cluster, qvalue) %>%
+  pull(Description) %>%
+  unique()
+
+all_bp_filtered$Description <- factor(
+  all_bp_filtered$Description,
+  levels = desc_levels
+)
+
+
+
+# Plotting
+p <- ggplot(all_bp_filtered,
+            aes(x = cluster,
+                y = Description,
+                fill = log_qvalue,
+                size = GeneRatio_numeric)) +
+  geom_point(shape = 21, color = "black") +
+  scale_fill_viridis(
+    option = "magma",
+    name = "-log10(q-value)",
+    limits = c(0, 25),
+    oob = scales::squish
+  ) +
+  scale_size_continuous(range = c(3, 10)) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, face = "bold", size = 24),
+    axis.text.y = element_text(face = "bold", size = 20)
+  ) +
+  labs(
+    x = "Cluster",
+    y = "GO Description",
+    fill = "-log10(qvalue)",
+    size = "GeneRatio"
+  )
+
+# Save plot as PDF
+ggsave("./Fig1/20250606.FIG1F.ClusterGO_BP.pdf", plot = p, height = 16, width = 16)
+
+p
+
+```
+
+## Figure 1G‑H – Marker Feature & Violin
+```{r feature-violin, fig.width=8, fig.height=12}
+genes_of_interest <- c("AT3G24140"="FMA","AT5G02600"="NPCC6")
+for(gid in names(genes_of_interest)){
+  a <- SCpubr::do_FeaturePlot(integrated_seurat15k, features=gid, font.size=16, max.cutoff=3,
+                              border.size=1.5, border.color="grey30",
+                              legend.title=sprintf("%s (%s) expression", genes_of_interest[gid], gid),
+                              legend.text.face="bold")
+  b <- VlnPlot(integrated_seurat15k, features=gid, group.by="sub.cluster", cols=sub.colors, pt.size=0)+
+       labs(x="", y="Expression")
+  c_plot <- a / b
+  print(c_plot)
+  ggsave(file.path(output_dir,
+                   sprintf("20250606.FIG1%s.%s.pdf",
+                           LETTERS[match(gid, names(genes_of_interest))+6],
+                           genes_of_interest[gid])),
+         c_plot, width=8, height=12)
+}
+```
+
+
+# Figure 2 – Clock gene cycling and cluster patterns
+
+### Figure 2A – Pseudobulk clock heat‑map
+```{r fig2a-clock-pseudobulk, fig.width=7, fig.height=12}
+clockorder <- c("AT1G01060","AT1G01520","AT1G12910","AT1G18330","AT1G22770",
+                "AT2G18915","AT2G21150","AT2G21660","AT2G25930","AT2G40080",
+                "AT2G44680","AT2G46790","AT2G46830","AT3G09600","AT3G12320",
+                "AT3G22380","AT3G26640","AT3G46640","AT3G47500","AT3G54500",
+                "AT3G60250","AT4G01280","AT4G39260","AT5G02810","AT5G02840",
+                "AT5G06980","AT5G08330","AT5G17300","AT5G24470","AT5G37260",
+                "AT5G52660","AT5G60100","AT5G61380","AT5G64170")
+
+gene_pseudonyms <- c(
+  "AT1G01060"="LHY","AT1G01520"="RVE3","AT1G12910"="LWD1","AT1G18330"="RVE7",
+  "AT1G22770"="GI","AT2G18915"="LKP2","AT2G21150"="XCT","AT2G21660"="CCR2",
+  "AT2G25930"="ELF3","AT2G40080"="ELF4","AT2G44680"="CKB4","AT2G46790"="PRR9",
+  "AT2G46830"="CCA1","AT3G09600"="RVE8","AT3G12320"="LNK3","AT3G22380"="TIC",
+  "AT3G26640"="LWD2","AT3G46640"="LUX","AT3G47500"="CDF","AT3G54500"="LNK2",
+  "AT3G60250"="CKB3","AT4G01280"="RVE5","AT4G39260"="CCR1","AT5G02810"="PRR7",
+  "AT5G02840"="RVE4","AT5G06980"="LNK4","AT5G08330"="CHE","AT5G17300"="RVE1",
+  "AT5G24470"="PRR5","AT5G37260"="RVE2","AT5G52660"="RVE6","AT5G60100"="PRR3",
+  "AT5G61380"="TOC1","AT5G64170"="LNK1")
+
+dir.create("./Fig2", showWarnings = FALSE)
+
+subset_seurat <- subset(integrated_seurat15k, features = clockorder) %>%
+  AddMetaData(metadata = gsub("A|B|C|d$", "", .$orig.ident), col.name = "timepoint")
+
+pseudobulk_matrix <- AverageExpression(subset_seurat, group.by="timepoint", slot="data")$RNA
+pseudobulk_matrix <- pseudobulk_matrix[, c("ZT00","ZT04","ZT08","ZT12","ZT16","ZT20","ZT24")]
+
+scaled_matrix <- t(apply(pseudobulk_matrix, 1, function(x) (x-mean(x))/sd(x)))
+rownames(scaled_matrix) <- gene_pseudonyms[rownames(scaled_matrix)]
+
+plot_order <- c("RVE4","RVE1","RVE8","CCA1","LHY","RVE3","LNK2","LNK3","LNK4",
+                "CDF","LNK1","PRR9","CKB3","RVE7","PRR7","LWD1","LWD2","CHE",
+                "GI","PRR5","CCR2","CCR1","PRR3","LUX","XCT","TOC1","ELF4",
+                "ELF3","TIC","RVE2","LKP2","CKB4","RVE6","RVE5")
+scaled_matrix <- scaled_matrix[plot_order, ]
+
+pheatmap(scaled_matrix, cluster_rows=FALSE, cluster_cols=FALSE,
+                      color=colorRampPalette(c("white","darkslategray"))(100),
+                      breaks=seq(-1,1,length.out=101), border_color=NA,
+                      show_colnames=TRUE, show_rownames=TRUE,
+                      fontsize=16, fontsize_row=12, cellwidth=24)
+
+pdf("./Fig2/20250606.FIG2A.ClockPseudobulkHeatmap.pdf", 7, 12)
+phm_fig2a <- pheatmap(scaled_matrix, cluster_rows=FALSE, cluster_cols=FALSE,
+                      color=colorRampPalette(c("white","darkslategray"))(100),
+                      breaks=seq(-1,1,length.out=101), border_color=NA,
+                      show_colnames=TRUE, show_rownames=TRUE,
+                      fontsize=16, fontsize_row=12, cellwidth=24)
+dev.off()
+```
+
+### Figure 2B – Gene × cluster heat‑maps
+```{r fig2b-individual-heatmaps}
+### Figure 2B – six core clock genes (robust)
+gene_pseudonyms <- c(
+  "AT1G22770"="GI",
+  "AT2G25930"="ELF3",
+  "AT2G46830"="CCA1", "AT3G46640"="LUX",
+  "AT5G02810"="PRR7",
+  "AT5G61380"="TOC1")
+# Cluster order for plotting
+col_order <- c("0", "1", "3", "4", "11", "2", "12-0", "13", "14", "16", 
+               "8-0", "9", "12-1", "5", "6", "7", "8-1", "10", "12-2", "15")
+g <- list()
+# Loop over each gene
+for (gene_id in names(gene_pseudonyms)) {
+  gene_name <- gene_pseudonyms[[gene_id]]
+  plot_title <- paste0(gene_name, " - ", gene_id)
+  file_name <- paste0("./Fig2/20250606.FIG2B.", gene_name, ".ClusterByZTHeatmap.pdf")
+  
+  # Aggregate expression
+  tmp <- AggregateExpression(integrated_seurat15k, group.by = c('sub.cluster','timepoint'), return.seurat = TRUE)
+  tmp2 <- GetAssayData(tmp)
+  tmp3 <- tmp2[rownames(tmp2) %in% gene_id, ]
+  
+  tmp4 <- data.frame(row.names = colnames(tmp2), expression = tmp3)
+  tmp5 <- tmp4 %>% rownames_to_column("sample")
+  
+  long_data <- tmp5 %>%
+    separate(sample, into = c("cluster", "timepoint"), sep = "(?<=_)ZT", extra = "merge") %>%
+    mutate(
+      timepoint = paste0("ZT", timepoint),
+      cluster = sub("_$", "", cluster)
+    )
+  
+  long_data$timepoint <- factor(long_data$timepoint, levels = sort(unique(long_data$timepoint)))
+  
+  heatmap_data <- long_data %>%
+    pivot_wider(names_from = timepoint, values_from = expression) %>%
+    column_to_rownames(var = "cluster")
+  
+  # Z-score scaling per row
+  scaled_data <- t(apply(heatmap_data, 1, function(x) {
+    if (sd(x) > 0) {
+      (x - mean(x)) / sd(x)
+    } else {
+      rep(0, length(x))
+    }
+  }))
+  
+  # Convert to long format for ggplot
+  heatmap_long <- melt(scaled_data, varnames = c("cluster", "timepoint"), value.name = "expression")
+  heatmap_long$cluster <- gsub("g", "", heatmap_long$cluster)
+  heatmap_long$cluster <- factor(heatmap_long$cluster, levels = col_order)
+  
+  # Plot
+  p <- ggplot(heatmap_long, aes(x = timepoint, y = cluster, fill = expression)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "darkslategray", name = "Z-score") +
+    theme_minimal() +
+    labs(title = plot_title, x = "", y = "") +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text = element_text(size = 20, face = "bold"),
+      plot.title = element_text(size = 20, face = "bold")
+    )
+  g[[gene_id]] <- p
+  ggsave(file_name, plot = p, width = 6, height = 8)
+}
+print(g)
+```
+
+### Figure 2C – Cycling‑gene counts per cluster
+```{r fig2c-counts, fig.width=14, fig.height=7}
+folder_path <- "./0.05p_sorted_JTK_Data"
+file_names <- list.files(folder_path, pattern = "*.xlsx", full.names = TRUE)
+cluster_data <- lapply(file_names, function(file) {
+  data <- read_excel(file)
+  return(data)
+})
+names(cluster_data) <- gsub("_0.05.xlsx", "", basename(file_names))  # Set names as cluster IDs
+
+# Step 2: Generate bar plot for gene counts
+gene_counts <- sapply(cluster_data, nrow)
+gene_counts_df <- data.frame(
+  Cluster = names(gene_counts),
+  Count = gene_counts
+)
+
+# Replace "_" with "-" in the cluster_order for matching the plot format
+cluster_order <- c("0", "1", "3", "4", "11", "2", "12_0", "13", "14", 
+                   "16", "8_0", "9", "12_1", "5", "6", "7", "8_1", "10", 
+                   "12_2", "15")
+
+# Adjust the Cluster column in gene_counts_df to match this order
+gene_counts_df <- gene_counts_df %>%
+  mutate(Cluster = factor(Cluster, levels = paste0("c", cluster_order)))  # Prepend "c" for matching
+
+
+# Create bar plot
+ggplot(gene_counts_df, aes(x = Cluster, y = Count)) +
+  geom_bar(stat = "identity", fill = "darkslategray") +
+  theme_minimal() +
+  labs(title = "Number of Cycling Genes in Each Cluster", x = "Cluster", y = "Cycling Gene Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text = element_text(size = 16, face = "bold", color = "black"), axis.title = element_text(size = 18, face = "bold"))
+ggsave("./Fig2/20250608.FIG2C.CycGenesPerClusterBar.pdf", width = 14, height = 7)
+
+# Step 3: Identify shared genes across clusters
+gene_presence <- lapply(cluster_data, function(df) df$CycID)
+gene_sets <- unique(unlist(gene_presence))
+
+shared_gene_summary <- sapply(gene_sets, function(g) {
+  sum(sapply(gene_presence, function(set) g %in% set))
+})
+gene_distribution <- table(shared_gene_summary)
+
+gene_distribution_df <- as.data.frame(gene_distribution)
+colnames(gene_distribution_df) <- c("Cluster_Count", "Gene_Frequency")
+
+ggplot(gene_distribution_df, aes(x = as.factor(Cluster_Count), y = Gene_Frequency)) +
+  geom_bar(stat = "identity", fill = "darkslategray") +
+  geom_text(aes(label = Gene_Frequency), vjust = -0.5, size = 6) +
+  theme_minimal() +
+  labs(title = "Gene Distribution Across Clusters", x = "Number of Clusters in which a Gene is Cycling", y = "Number of Genes") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text = element_text(size = 16, face = "bold", color = "black"), axis.title = element_text(size = 18, face = "bold"))
+ggsave("20250103.FIG2C.CyclingConservationAcrossClusters.png", width = 14, height = 7)
+
+```
+
+### Figure 2D – Clock‑gene overlay on distribution
+```{r fig2d-overlay, fig.width=14, fig.height=7}
+# Step 1: Generate the gene distribution for all genes
+gene_presence <- lapply(cluster_data, function(df) df$CycID)
+gene_sets <- unique(unlist(gene_presence))
+
+# Step 2: Calculate shared gene summary
+shared_gene_summary <- sapply(gene_sets, function(g) {
+  sum(sapply(gene_presence, function(set) g %in% set))
+})
+
+# Step 3: Filter for clock genes and create an annotation dataset
+clock_pseudonyms <- c(
+  "AT1G01060" = "LHY", "AT1G01520" = "RVE3", 
+  "AT1G18330" = "RVE7", "AT1G22770" = "GI", "AT2G25930" = "ELF3",
+  "AT2G40080" = "ELF4", "AT2G46790" = "PRR9",
+  "AT2G46830" = "CCA1", "AT3G09600" = "RVE8", "AT3G12320" = "LNK3", "AT3G46640" = "LUX", "AT3G54500" = "LNK2",
+  "AT4G01280" = "RVE5", "AT5G02810" = "PRR7",
+  "AT5G02840" = "RVE4", "AT5G06980" = "LNK4", "AT5G08330" = "CHE",
+  "AT5G17300" = "RVE1", "AT5G24470" = "PRR5", "AT5G37260" = "RVE2",
+  "AT5G52660" = "RVE6", "AT5G60100" = "PRR3", "AT5G61380" = "TOC1",
+  "AT5G64170" = "LNK1"
+)
+
+clock_gene_summary <- shared_gene_summary[names(shared_gene_summary) %in% names(clock_pseudonyms)]
+annotation_data <- data.frame(
+  Cluster_Count = as.factor(clock_gene_summary),  # Number of clusters the gene cycles in
+  Gene_Name = clock_pseudonyms[names(clock_gene_summary)]  # Use the pseudonym for the gene
+)
+
+# Combine genes cycling in the same number of clusters
+annotation_data <- annotation_data %>%
+  group_by(Cluster_Count) %>%
+  summarize(Annotations = paste(Gene_Name, collapse = "\n"), .groups = "drop")
+
+# Merge annotation data with gene distribution for plotting
+annotation_data <- merge(annotation_data, gene_distribution_df, by.x = "Cluster_Count", by.y = "Cluster_Count")
+
+# Compute a constant y position at the middle of the gene frequency range
+mid_y <- max(gene_distribution_df$Gene_Frequency) / 2
+
+# Create the bar plot and annotate with clock genes positioned in a horizontal line
+ggplot(gene_distribution_df, aes(x = as.factor(Cluster_Count), y = Gene_Frequency)) +
+  geom_bar(stat = "identity", fill = "darkslategray") +
+  geom_text(aes(label = Gene_Frequency), vjust = -0.5, size = 6) +  # Bar labels
+  geom_text(data = annotation_data, aes(
+    x = Cluster_Count, 
+    y = mid_y,
+    label = Annotations,
+    color = ifelse(as.character(Cluster_Count) == "1", "white", "black")
+  ), size = 3.5, fontface = "bold", hjust = 0.5, vjust = 0.5) +  # Smaller annotation text with conditional color
+  scale_color_identity() +  # Use the specified colors directly
+  theme_minimal() +
+  labs(
+    title = "Gene Distribution Across Clusters with Clock Genes Annotated", 
+    x = "Number of Clusters in which a Gene is Cycling", 
+    y = "Number of Genes"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.text = element_text(size = 16, face = "bold", color = "black"), 
+    axis.title = element_text(size = 18, face = "bold")
+  )
+ggsave("./Fig2/20250608.FIG2D.CyclingConservationAcrossClusters.pdf", width = 14, height = 7)
+```
+
+# Figure 3
+
+## Figure 3A
+
+
+## Figure 3B
+
+
+## Figure 3C
+
+
+# Figure 4
+
+## Figure 4A
+#### Designed from scratch through Inkscape
+
+## Figure 4B
+#### Counts of same or different WGCNA assignments between TFs and targets visalized in Python
+#### FIG4B_WGCNAscGRNoverlap.ipynb
+
+## Figure 4C
+#### scGRN GO enrichments computed and visualized in Python
+#### FIG4C_GRNTargets.GOenrich.bgCorrected.ipynb
+
+## Figure 4D
+#### Global similarity matrices computed and visualized in Python
+#### FIG4DE_GRNJaccardHeatmaps.ipynb
+
+## Figure 4E
+#### CCA1 similarity matrices computed and visualized in Python
+#### FIG4DE_GRNJaccardHeatmaps.ipynb
+
+# Figure 5
+
+## Figure 5A
+```` {r fig5a-chipoverlapwithscgrns, fig.width=6, fig.height=10}
+#--- helper: wrap the list-of-grobs into ONE grob -------------------------------
+as_one_grob <- function(x) grid::grobTree(do.call(grid::gList, x))
+
+#--- 1) build raw Venn pieces ---------------------------------------------------
+venn_cca1_raw <- draw.pairwise.venn(
+  area1  = 2547 + 678,
+  area2  = 5116 + 678,
+  cross.area = 678,
+  category   = c("Nagel_CCA1_Chipseq", "Greenham Single Cell CCA1_GRN"),
+  fill       = c("#0091B1FF", "#00914CFF"),
+  lty        = "blank",
+  scaled     = TRUE, direct.labels = TRUE,
+  cex = 1.5, cat.cex = 1.2,
+  filename = NULL, ind = FALSE
+)
+
+venn_prr7_raw <- draw.pairwise.venn(
+  area1  = 742 + 447,
+  area2  = 5324 + 447,
+  cross.area = 447,
+  category   = c("Tiffany's_PRR7_Chipseq", "Greenham Single Cell PRR7_GRN"),
+  fill       = c("#0091B1FF", "#00914CFF"),
+  lty        = "blank",
+  scaled     = TRUE, direct.labels = TRUE,
+  cex = 1.5, cat.cex = 1.2,
+  filename = NULL, ind = FALSE
+)
+
+#--- 2) wrap each list so it’s a single grob ------------------------------------
+venn_cca1 <- as_one_grob(venn_cca1_raw)
+venn_prr7 <- as_one_grob(venn_prr7_raw)
+
+#--- 3) stack the two grobs (1 column × 2 rows) ---------------------------------
+combined <- gridExtra::arrangeGrob(grobs = list(venn_cca1, venn_prr7), ncol = 1)
+
+#--- 4) DRAW so knitr captures it ----------------------------------------------
+grid.newpage()
+grid.draw(combined)
+
+#--- 5) Write a high-res PDF with ggsave() ---------------------------------
+ggsave("GRNandChIP.CCA1PRR7overlap.pdf",
+       plot   = combined,
+       width  = 12, height = 12, units = "in",
+       device = cairo_pdf)   # drop device= if cairo isn’t installed
+````
+
+## Figure 5B
+#### CCA1-centered network visualized through Cytoscape
+
+## Figure 5C
+#### CCA1-centered network visualized through Cytoscape
+
+## Figure 5D
+#### PRR7-centered network visualized through Cytoscape
+
+## Figure 5E
+#### PRR7-centered network visualized through Cytoscape
+
+
+# Supplemental Figures
+
+## Figure S1
+````{r}
+# ---- Figure S1 - generate PDF of top markers ----
+markers <- snTC_markers %>%
+  filter(p_val_adj < 0.01, pct.1 > 0.1)
+
+top2 <- markers %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 2) %>%
+  ungroup()
+
+Idents(integrated_seurat15k) <- "sub.cluster"
+clusters_to_plot <- levels(Idents(integrated_seurat15k))
+
+# For 5x4 grid
+clusters_per_page <- 20
+n_pages <- ceiling(length(clusters_to_plot) / clusters_per_page)
+
+pdf("./Supp/FigS1_AllClusters_TopMarkers_5x4.pdf", width = 20, height = 50)
+
+for (page in seq_len(n_pages)) {
+  grid_list <- list()
+  idx_start <- (page - 1) * clusters_per_page + 1
+  idx_end <- min(page * clusters_per_page, length(clusters_to_plot))
+  clusters_on_this_page <- clusters_to_plot[idx_start:idx_end]
+  
+  for (cl in clusters_on_this_page) {
+    genes <- top2 %>% filter(cluster == cl) %>% pull(gid)
+    if (length(genes) < 2) next
+    
+    # Plot for gene 1
+    fp1 <- FeaturePlot(integrated_seurat15k, features = genes[1], reduction = "umap", raster = TRUE) +
+      ggtitle(paste0("Cl ", cl, " | ", genes[1]))
+    vl1 <- VlnPlot(integrated_seurat15k, features = genes[1], pt.size = 0) + NoLegend()
+    
+    # Plot for gene 2
+    fp2 <- FeaturePlot(integrated_seurat15k, features = genes[2], reduction = "umap", raster = TRUE) +
+      ggtitle(paste0("Cl ", cl, " | ", genes[2]))
+    vl2 <- VlnPlot(integrated_seurat15k, features = genes[2], pt.size = 0) + NoLegend()
+    
+    # Stack vertically for this cluster (4 rows)
+    cl_panel <- plot_grid(fp1, vl1, fp2, vl2, ncol = 1, rel_heights = c(1, 0.7, 1, 0.7))
+    grid_list[[cl]] <- cl_panel
+  }
+  
+  # Fill to 20 if needed
+  if (length(grid_list) < clusters_per_page) {
+    for (i in (length(grid_list) + 1):clusters_per_page) {
+      grid_list[[paste0("blank", i)]] <- ggplot() + theme_void()
+    }
+  }
+  
+  final_grid <- plot_grid(plotlist = grid_list, ncol = 4, scale = 0.9)
+  print(final_grid)
+}
+
+dev.off()
+
+knitr::include_graphics("./Supp/FigS1_AllClusters_TopMarkers_5x4.pdf")
+````
+## Figure S2
+````{r}
+# pull out metadata
+meta_df <- integrated_seurat15k@meta.data %>% as_tibble()
+
+# define all orig.idents so zeros get filled
+all_idents <- unique(meta_df$orig.ident)
+
+# compute Cluster 16 counts per orig.ident, fill missing with 0
+cluster_16_by_ident <- meta_df %>%
+  filter(sub.cluster == "16") %>%
+  group_by(orig.ident) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  complete(orig.ident = all_idents, fill = list(n = 0)) %>%
+  mutate(orig.ident = factor(orig.ident, levels = all_idents))
+
+# plot
+p <- ggplot(cluster_16_by_ident, aes(x = orig.ident, y = n)) +
+  geom_col(fill = sub.colors["16"]) +
+  geom_text(aes(label = n), vjust = -0.5, size = 5) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold", size = 14),
+    axis.text.y = element_text(face = "bold", size = 14),
+    axis.title = element_text(face = "bold", size = 16)
+  ) +
+  labs(
+    title = "Cluster 16 Nuclei Distribution by Sample",
+    x = "Sample (orig.ident)",
+    y = "Number of Nuclei"
+  )
+
+# save
+ggsave("./Supp/FIGS2_20250611.S2.Cluster16_by_orig.ident.pdf", p, width = 8, height = 5)
+
+p
+````
+## Figure S3
+
+
+## Figure S4
+#### Phase distribution of marker genes in each cluster analyzed through Python
+
+
+## Figure S5
+
+
+## Figure S6
+````{r figS6, fig.width=16, fig.height=20}
+# Load Seurat object
+seurat_obj <- integrated_seurat15k
+
+# Define genes of interest
+genes <- c("AT1G01060", "AT1G70000", "AT2G06850", "AT2G25930", "AT2G28085",
+           "AT3G03820", "AT3G03840", "AT3G48360", "AT3G60690", "AT4G30080",
+           "AT4G38840", "AT4G38850", "AT4G38860", "AT5G08640", "AT5G37260",
+           "AT5G54500", "AT5G63160", "AT5G67480")
+
+genes_present <- genes[genes %in% rownames(seurat_obj)]
+if (length(genes_present) == 0) stop("None of the selected genes are present in the Seurat object.")
+
+# Expression + metadata
+plot_data <- FetchData(seurat_obj, vars = c(genes_present, "sub.cluster", "timepoint")) %>%
+  rownames_to_column("cell") %>%
+  pivot_longer(cols = all_of(genes_present), names_to = "gene", values_to = "expression") %>%
+  dplyr::rename(cluster = sub.cluster)
+
+# Cluster order
+custom_order <- c("0","1","5","2","11","3","4","12_2","10","9",
+                  "14","6","12_0","7","8_0","12_1","13","8_1","16","15")
+plot_data$cluster <- factor(plot_data$cluster, levels = custom_order)
+plot_data$cluster_num <- as.numeric(plot_data$cluster)
+cluster_lookup <- setNames(seq_along(custom_order), custom_order)
+
+# --- WGCNA annotations ---
+highlight_clusters_dict <- list(
+  "AT1G01060" = c("0", "1", "10", "11", "12_0", "12_2", "15", "2", "3", "4", "5", "6", "7", "8_0", "9"),
+  "AT1G70000" = c("0", "1", "10", "11", "12_0", "7", "9"),
+  "AT2G06850" = c("1"),
+  "AT2G25930" = c("0", "1", "10", "12_0", "12_2", "13", "14", "2", "4", "5", "9"),
+  "AT2G28085" = c("1"),
+  "AT3G03820" = c("0", "2", "7"),
+  "AT3G03840" = c("12_2", "5"),
+  "AT3G48360" = c("0", "1", "10", "11", "12_0", "12_2", "13", "14", "15", "2", "3", "4", "5", "6"),
+  "AT3G60690" = c("1"),
+  "AT4G30080" = c("1"),
+  "AT4G38840" = c("0"),
+  "AT4G38850" = c("1", "5", "6"),
+  "AT4G38860" = c("0", "1", "10", "11", "12_0"),
+  "AT5G08640" = c("0", "10", "11", "6"),
+  "AT5G37260" = c("0", "1", "10", "11", "12_0", "12_1", "12_2", "13", "14", "15", "2", "3", "4", "5", "7", "8_1", "9"),
+  "AT5G54500" = c("0", "14", "4", "5"),
+  "AT5G63160" = c("0"),
+  "AT5G67480" = c("0", "1", "11", "12_1", "2", "4", "5", "7")
+)
+highlight_df <- do.call(rbind, lapply(names(highlight_clusters_dict), function(g) {
+  data.frame(gene = g, cluster = highlight_clusters_dict[[g]], stringsAsFactors = FALSE)
+}))
+highlight_df$cluster_num <- cluster_lookup[as.character(highlight_df$cluster)]
+highlight_df <- highlight_df[!is.na(highlight_df$cluster_num), ]
+
+# --- CCA1 annotations ---
+cca1_cluster_map <- list(
+  "AT1G01060" = c("0","1","2","3","4","5"),
+  "AT1G70000" = c("0","1","7","9"),
+  "AT2G06850" = c("1"),
+  "AT2G25930" = c("0","1","2","4","5","9"),
+  "AT2G28085" = c("1"),
+  "AT3G03820" = c("0","2","7"),
+  "AT3G03840" = c("5"),
+  "AT3G48360" = c("0","1","2","3","4","5"),
+  "AT3G60690" = c("1"),
+  "AT4G30080" = c("1"),
+  "AT4G38840" = c("0"),
+  "AT4G38850" = c("1","5"),
+  "AT4G38860" = c("0","1","10","11"),
+  "AT5G08640" = c("0","10","11"),
+  "AT5G37260" = c("0","1","2","3","4","5","7","8_1","9","10","11","12_0","12_1","12_2","13","14","15"),
+  "AT5G54500" = c("0","4","5"),
+  "AT5G63160" = c("0"),
+  "AT5G67480" = c("0","1","2","4","5","7","11","12_1")
+)
+cca1_df <- do.call(rbind, lapply(names(cca1_cluster_map), function(g) {
+  data.frame(gene = g, cluster = cca1_cluster_map[[g]], stringsAsFactors = FALSE)
+}))
+cca1_df$cluster <- factor(cca1_df$cluster, levels = custom_order)
+cca1_df$cluster_num <- cluster_lookup[as.character(cca1_df$cluster)]
+cca1_df <- cca1_df[!is.na(cca1_df$cluster_num), ]
+
+# --- Plot with CCA1 overlaying WGCNA ---
+p <- ggplot() +
+  # WGCNA background (lightblue)
+  geom_rect(data = highlight_df,
+            aes(xmin = cluster_num - 0.4,
+                xmax = cluster_num + 0.4,
+                ymin = -Inf, ymax = Inf,
+                group = interaction(gene, cluster)),
+            fill = "lightblue", alpha = 0.2) +
+  # CCA1 on top (lightcoral)
+  geom_rect(data = cca1_df,
+            aes(xmin = cluster_num - 0.4,
+                xmax = cluster_num + 0.4,
+                ymin = -Inf, ymax = Inf,
+                group = interaction(gene, cluster)),
+            fill = "lightcoral", alpha = 0.4) +
+  # Expression data
+  geom_boxplot(data = plot_data,
+               aes(x = cluster, y = expression),
+               outlier.size = 0.3, fill = "darkorange", color = "black") +
+  facet_grid(gene ~ timepoint, scales = "free_y", switch = "y") +
+  theme_minimal(base_size = 13) +
+  labs(x = "Cluster", y = "Expression",
+       title = "Expression of Cycling Genes with WGCNA and CCA1 GRN Support") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0)
+  )
+
+# Save output
+ggsave("./Supp/FIGS6_20250612.ExpressionByCluster_WGCNAandCCA1.pdf", p, width = 16, height = 20)
+
+p
+````
+## Figure S7
+
+
+
+
+
