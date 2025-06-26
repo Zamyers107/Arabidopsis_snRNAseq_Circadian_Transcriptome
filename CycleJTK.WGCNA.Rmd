@@ -1,0 +1,5129 @@
+---
+title: "snTC Final Code AZ"
+output: html_document
+date: "2025-06-25"
+---
+
+# Set Working Directory
+```{r setup, include=FALSE}
+setwd("~/apps/snTC/15k_RPCA_20240903_Drop24B/20241231_Cluster_split_data")
+```
+Load Necessary Libraries
+
+
+```{r Load packages and set up the environment; message = FALSE; warning = FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(DESeq2, lib.loc = "/panfs/jay/groups/18/greenham/azulfiqa/R/4.4.0")
+library(genefilter, lib.loc = "/panfs/jay/groups/18/greenham/azulfiqa/R/4.4.0")
+library(ggplot2)
+library(readxl)
+```
+
+Function to process the clusters 
+
+```{r}
+process_cluster <- function(cluster_number) {
+  # Initialize an empty list to store results
+  result_list <- list()
+  
+  # Define your grouping factor
+  group <- factor(c(rep(1:6, each = 2), 7))
+  
+  # Loop through all sample files
+  for (i in 1:13) {
+    # Construct the file path
+    file_path <- paste0("20241231.snTC.RPCA15k.DROPZT24B.sample", i, "cluster", cluster_number, ".counts.csv")
+    
+    # Read the file
+    cluster_data <- read_csv(file_path)
+    
+    # Convert relevant columns to numeric
+    cluster_numeric <- cluster_data %>%
+      mutate(across(-1, as.numeric))
+    
+    # Extract the name of the first column
+    first_column_name <- names(cluster_numeric)
+    
+    # Calculate row sums
+    sums_vector <- rowSums(cluster_numeric[, -1], na.rm = TRUE)
+    
+    # Create a data frame with gene names, sum vector, and column name
+    result_df <- data.frame(
+      gene = cluster_numeric[[first_column_name]],
+      Cluster = paste0("Cluster", cluster_number, "_ZT", i),
+      sum = sums_vector
+    )
+    
+    # Append the result to the list
+    result_list[[i]] <- result_df
+  }
+  
+  # Combine the results into a single data frame
+  final_result_df <- do.call(rbind, result_list)
+  
+  # Pivot the data
+  wide_data <- final_result_df %>%
+    pivot_wider(names_from = Cluster, values_from = sum)
+  
+  # Prepare data for DESeq2
+  counts_matrix <- as.matrix(wide_data[, -1])
+  rownames(counts_matrix) <- wide_data$gene
+  meta_df <- data.frame(row.names = colnames(counts_matrix), Type = group)
+  
+  # Create DESeq2 dataset
+  dds <- DESeqDataSetFromMatrix(countData = round(counts_matrix),
+                                 colData = meta_df,
+                                 design = ~Type)
+  
+  # Run the DESeq2 normalization
+  dds <- DESeq(dds)
+  
+  # Apply the variance-stabilizing transformation
+  vsd <- varianceStabilizingTransformation(dds)
+  
+  # Extract the normalized data
+  expr_normalized <- assay(vsd)
+  
+  # Convert normalized data to a data frame and add gene names
+  expr_normalized_df <- data.frame(expr_normalized) %>%
+    mutate(Gene_id = rownames(expr_normalized))
+  
+  # Write the normalized data to a CSV file
+  write.csv(expr_normalized_df, 
+            paste0("/home/greenham/azulfiqa/apps/snTC/15k_RPCA_20240903_Drop24B/20241231_Cluster_split_data/DeSeq2_Normalized_Counts/Cluster", cluster_number, "_ZTs_normalized_counts.csv"), 
+            row.names = TRUE)
+  
+  # Optional: Visualize normalized expression
+  expr_normalized_df_long <- expr_normalized_df %>%
+    pivot_longer(-Gene_id, names_to = "Sample", values_to = "Expression")
+  
+  plot <- expr_normalized_df_long %>%
+    ggplot(aes(x = Sample, y = Expression)) +
+    geom_violin() +
+    geom_point() +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    ylim(0, NA) +
+    labs(title = paste("Normalized Expression for Cluster", cluster_number),
+         x = "Sample",
+         y = "Normalized Expression")
+  
+  print(plot)
+}
+
+# Process Clusters 0 to 18
+for (cluster_number in 0:18) {process_cluster(cluster_number)}
+```
+MetaCycle Analysis
+
+```{r}
+library(MetaCycle)
+
+# Set input and output directories
+input_directory <- "/home/greenham/azulfiqa/apps/snTC/15k_RPCA_20240903_Drop24B/20241231_Cluster_split_data/DeSeq2_Normalized_Counts/"
+output_directory <- "/panfs/jay/groups/18/greenham/azulfiqa/apps/snTC/15k_RPCA_20240903_Drop24B/20241231_Cluster_split_data/DeSeq2_Normalized_Counts/MetacycleDeSeq_Normalised_Cluster/"
+
+# Loop through clusters for MetaCycle analysis
+for (i in 0:18) {
+  # Construct the file paths
+  input_file <- paste0(input_directory, "Cluster", i, "_ZTs_normalized_counts.csv")
+  output_file <- paste0(output_directory, "Cluster", i, "_Counts_Compiled_All_ZTs.csv")
+  
+  # Read the cluster file
+  cluster_data <- read_csv(input_file)
+  
+  # Extract gene names
+  genes <- cluster_data$gene
+  
+  # Modify column names
+  new_header <- c("Gene", rep(seq(0, 24, by = 4), each = 2), 24)
+  colnames(cluster_data) <- new_header
+  
+  # Write the modified data to a new CSV file
+  write.csv(cluster_data, file = output_file, row.names = FALSE)
+  
+  # Run the meta2d command if needed
+  meta2d(infile = output_file, filestyle = "csv", outdir = output_directory,
+         timepoints = "Line1")
+}
+```
+WGCNA_Analysis 
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+```
+
+List of File Names to get normalised expression for all genes in all clusters
+
+```{r}
+file_names <- c("Cluster0_Counts_Compiled_All_ZTs.csv",
+                 "Cluster1_Counts_Compiled_All_ZTs.csv",
+                 "Cluster2_Counts_Compiled_All_ZTs.csv",
+                 "Cluster3_Counts_Compiled_All_ZTs.csv",
+                 "Cluster4_Counts_Compiled_All_ZTs.csv",
+                 "Cluster5_Counts_Compiled_All_ZTs.csv",
+                 "Cluster6_Counts_Compiled_All_ZTs.csv",
+                 "Cluster7_Counts_Compiled_All_ZTs.csv",
+                 "Cluster8_Counts_Compiled_All_ZTs.csv",
+                 "Cluster9_Counts_Compiled_All_ZTs.csv",
+                 "Cluster10_Counts_Compiled_All_ZTs.csv",
+                 "Cluster11_Counts_Compiled_All_ZTs.csv",
+                 "Cluster12_Counts_Compiled_All_ZTs.csv",
+                 "Cluster13_Counts_Compiled_All_ZTs.csv",
+                 "Cluster14_Counts_Compiled_All_ZTs.csv",
+                 "Cluster15_Counts_Compiled_All_ZTs.csv",
+                 "Cluster16_Counts_Compiled_All_ZTs.csv",
+                 "Cluster17_Counts_Compiled_All_ZTs.csv",
+                 "Cluster18_Counts_Compiled_All_ZTs.csv")
+```
+Initialize an Empty List to Store the Data Frames
+```{r}
+all_matrices <- list()
+```
+
+Loop Through Each File to Read and Store the Data Frames
+
+```{r}
+for (file in file_names) {
+  # Read the matrix data from the CSV file
+  matrix_data <- read_csv(file)
+
+  # Extract the cluster number from the file name
+  cluster_number <- sub(".*Cluster([0-9]+).*", "\\1", file)
+
+  # Add the cluster number to the gene IDs
+  matrix_data <- matrix_data %>%
+    mutate(Gene = paste0(Gene, "_", cluster_number))
+
+  # Store the data frame in the list
+  all_matrices <- append(all_matrices, list(matrix_data))
+}
+```
+
+Optionally, Combine All Data Frames into One
+```{r}
+combined_df <- bind_rows(all_matrices)
+
+# Set new column names
+new_header <- c("Gene", "ZT0A", "ZT0B", "ZT04A", "ZT04B", "ZT08A", "ZT08B", 
+                "ZT12A", "ZT12B", "ZT16A", "ZT16B", "ZT20A", "ZT20B", "ZT24A", "ZT24B")
+colnames(combined_df) <- new_header
+
+# View the combined data frame
+print(head(combined_df))
+
+# Write the combined data frame to a CSV file
+write.csv(combined_df, "Combined_ZTs_DeSeq_normalized_counts_matrix.csv", row.names = FALSE)
+```
+
+Make one matrix for 0.05p sorted cyclic genes and merge with Combined_ZTs_DeSeq_normalized_counts_matrix.csv to feed to WGCNA 
+```{r}
+Cluster0 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster0_0.05.xlsx")
+Cluster1 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster1_0.05.xlsx")
+Cluster2 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster2_0.05.xlsx")
+Cluster3 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster3_0.05.xlsx")
+Cluster4 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster4_0.05.xlsx")
+Cluster5 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster5_0.05.xlsx")
+Cluster6 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster6_0.05.xlsx")
+Cluster7 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster7_0.05.xlsx")
+Cluster8 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster8_0.05.xlsx")
+Cluster9 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster9_0.05.xlsx")
+Cluster10 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster10_0.05.xlsx")
+Cluster11 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster11_0.05.xlsx")
+Cluster12 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster12_0.05.xlsx")
+Cluster13 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster13_0.05.xlsx")
+Cluster14 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster14_0.05.xlsx")
+Cluster15 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster15_0.05.xlsx")
+Cluster16 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster16_0.05.xlsx")
+Cluster17 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster17_0.05.xlsx")
+Cluster18 <- read_excel("/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data/Cluster18_0.05.xlsx")
+
+
+# List of file names and their corresponding suffixes
+file_info <- list(
+  Cluster0 = "0",
+  Cluster1 = "1",
+  Cluster2 = "2",
+  Cluster3 = "3",
+  Cluster4 = "4",
+  Cluster5 = "5",
+  Cluster6 = "6",
+  Cluster7 = "7",
+  Cluster8 = "8",
+  Cluster9 = "9",
+  Cluster10 = "10",
+  Cluster11 = "11",
+  Cluster12 = "12",
+  Cluster13 = "13",
+  Cluster14 = "14",
+  Cluster15 = "15",
+  Cluster16 = "16",
+  Cluster17 = "17",
+  Cluster18 = "18"
+)
+
+#read in files with genes name for each cluster
+
+# Initialize an empty list to store the data frames
+all_matrices <- list()
+
+# Loop through each file and its corresponding suffix
+for (cluster_name in names(file_info)) {
+  # Construct the file path
+  file_path <- paste0(cluster_name, ".xlsx")
+  
+  # Read the data from the file
+  cluster_data <- read_excel(file_path)
+  
+  # Add the suffix to the 'Gene' column
+  suffix <- file_info[[cluster_name]]
+  cluster_data <- cluster_data %>%
+    mutate(Gene = paste0(Gene, "_", suffix))
+  
+  # Store the modified data frame in the list
+  all_matrices[[cluster_name]] <- cluster_data
+}
+
+# Combine all data frames by binding rows
+combined_df <- bind_rows(all_matrices)
+
+# View the combined data frame
+print(head(combined_df))
+
+# Write the final combined data frame to a CSV file
+write.csv(combined_df, "Combined_ZTs_allclusters_cyclic_0.05p_matrix.csv", row.names = FALSE)
+```
+
+
+```{r}
+Combined_ZTs_DeSeq_normalized_counts_matrix <- read_csv("Combined_ZTs_DeSeq_normalized_counts_matrix.csv")
+Combined_ZTs_allclusters_cyclic_0_05p_matrix <- read_csv("Combined_ZTs_allclusters_cyclic_0.05p_matrix.csv")
+# Merge the data based on a common column (assuming the common column is 'Gene')
+merged_df <- left_join(Combined_ZTs_allclusters_cyclic_0_05p_matrix, Combined_ZTs_DeSeq_normalized_counts_matrix, by = "Gene")
+
+# Write the merged data frame to a CSV file
+write_csv(merged_df, "Combined_ZTs_Deseq_normalized_counts_cyclic_0.05p_matrix_All_Samples.csv")
+```
+
+WGCNA 
+Set up the environment
+
+```{r}
+require(readr)
+require(tidyverse)
+require(WGCNA)
+require(DiPALM)
+require(pheatmap)
+```
+
+```{r}
+Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples <- read_csv("Combined_ZTs_Deseq_normalized_counts_cyclic_0.05p_matrix_All_Samples.csv")
+
+colnames(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples)
+# Assuming the data frame is named Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples
+
+# Get the gene names
+genes <- Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples$Gene
+
+# Calculate the average of A and B for each time point
+Combined_ZTs_Avg <- data.frame(
+  Gene = genes,
+  ZT0 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT0A", "ZT0B")], na.rm = TRUE),
+  ZT4 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT04A", "ZT04B")], na.rm = TRUE),
+  ZT8 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT08A", "ZT08B")], na.rm = TRUE),
+  ZT12 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT12A", "ZT12B")], na.rm = TRUE),
+  ZT16 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT16A", "ZT16B")], na.rm = TRUE),
+  ZT20 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT20A", "ZT20B")], na.rm = TRUE),
+  ZT24 = rowMeans(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_All_Samples[, c("ZT24A")], na.rm = TRUE)
+)
+
+# View the resulting data frame
+head(Combined_ZTs_Avg)
+
+# Write the merged data frame to a CSV file
+write_csv(Combined_ZTs_Avg, "Combined_ZTs_Deseq_normalized_counts_cyclic_0.05p_matrix_Avg.csv")
+Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_Avg <- read_csv("Combined_ZTs_Deseq_normalized_counts_cyclic_0.05p_matrix_Avg.csv")
+```
+
+WGCNA 
+
+```{r}
+DF = data.frame(Combined_ZTs_Deseq_normalized_counts_cyclic_0_05p_matrix_Avg)
+rownames(DF) <- DF[,1]
+DF = subset(DF, 
+            select = c(2,3,4,5,6,7,8))
+
+TCs_List <- lapply(colnames(DF), function(tp) {
+  data.frame(GeneID = rownames(DF), Expression = DF[, tp])
+})
+
+# Rename list elements to match original column names
+names(TCs_List) <- colnames(DF)
+
+noTreat <- lapply(TCs_List, function(x) {
+  rownames(x) <- rownames(x)
+  return(x)
+})
+
+## Cluster samples
+sampleTree= hclust(dist(t(DF)), method = "average")
+
+plot(sampleTree, main = "Using hclust to detect outliers", sub="", xlab="", cex.lab = 1.5,cex.axis = 1.5, cex.main = 2)
+
+# Can allow parallel processing for multiple cores
+#allowWGCNAThreads(8)
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to = 50, by = 2))
+cex1 = 0.9
+
+## Estimate parameters for the network
+# rows correspond to samples and columns to genes
+threshold = pickSoftThreshold(t(DF), powerVector = powers, verbose = 5)
+
+
+## Plot to select parameters
+pdf("ParamEstimates.pdf", width = 8, height = 8)
+# Scale free topology fit
+plot(threshold$fitIndices[,1],
+     -sign(threshold$fitIndices[,3])*threshold$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(threshold$fitIndices[,1],
+     -sign(threshold$fitIndices[,3])*threshold$fitIndices[,2],
+     labels=powers,cex=cex1,col="red")
+abline(h=0.90,col="red")
+
+# Mean connectivity as a function of the soft-thresholding power 
+plot(threshold$fitIndices[,1], threshold$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(threshold$fitIndices[,1], threshold$fitIndices[,5], labels=powers, cex=cex1,col="red")
+dev.off()
+
+## Construct the network
+BlockModsAll <- blockwiseModules(datExpr = t(DF), power = 30, networkType = "signed", corType="bicor", TOMType="signed", maxBlockSize = 14927, mergeCutHeight=0.2, deepSplit=1, pamRespectsDendro = F, nThreads = 4, verbose=3)
+
+# save to avoid re-running in the future
+##### CHANGE FILE NAME BASED ON GENOTYPE #####
+save(BlockModsAll, file = "BlockModsAll.RData")
+
+## Plot the module dendrograms
+# convert labels to colors
+mergedColors = labels2colors(BlockModsAll$colors)
+# Assuming BlockModsAll is your list and contains the "colors" element
+unique_colors <- unique(BlockModsAll[["colors"]])
+
+# Print the unique colors
+print(unique_colors)
+pdf("ModuleDendros.pdf", width = 8, height = 8)
+plotDendroAndColors(BlockModsAll$dendrograms[[1]], mergedColors[BlockModsAll$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05, 
+                    ##### CHANGE #####
+                    main = "Module Relationships")
+dev.off()
+
+# identify how many modules were detected
+MEs = (BlockModsAll[[3]])
+
+
+MEs = rownames_to_column(MEs, var = "Zts")
+
+MEs$Zts = gsub("ZT", "", MEs$Zts)
+
+# lengthen to plot the patterns
+MEs = pivot_longer(MEs, cols = !Zts, names_to = "Modules", values_to = "Expression")
+
+pdf("ModuleEigengenes.pdf", width = 8, height = 8)
+MEs %>%
+  ggplot(aes(x = as.numeric(Zts), y = Expression)) +
+  geom_line() +
+  facet_wrap(~Modules) +
+  xlab("Zt") +
+  ylab("Time series response") +
+  ggtitle("Co-expression Eigengene Patterns") +
+  theme_bw()
+dev.off()
+```
+
+```{r}
+# Extract the colors vector from BlockModsAll
+colors_vector <- BlockModsAll[["colors"]]
+
+# Convert to data frame
+moduleColors_df <- data.frame(GeneID = names(colors_vector), Color = colors_vector, row.names = NULL)
+
+# Show the resulting data frame
+print(moduleColors_df)
+write.csv(moduleColors_df, file = "gene_modules.csv", row.names = FALSE)
+# Assuming moduleColors_df is your data frame
+colors <- unique(moduleColors_df$Color)
+
+# Create a list to store subsets
+color_data_list <- list()
+
+# Loop through each color and create subsets
+for (color in colors) {
+  # Subset data for the current color
+  color_data <- moduleColors_df[moduleColors_df$Color == color, ]
+  
+  # Store subset in list with color name as key
+  color_data_list[[color]] <- color_data
+  
+  # Generate file name
+  file_name <- paste0("module_", color, ".csv")
+  
+  # Write subset to CSV file
+  write.csv(color_data, file = file_name, row.names = FALSE)
+}
+
+##### ##### ##### DIPALM ##### ##### #####
+# Convert data frame to a list of matrices (each matrix for a time point)
+# Convert data frame to a list with gene names as rows and expression values as columns
+gene_list <- list(DF)
+
+# Display the resulting list
+print(gene_list)
+# re-set MEs
+MEs = (BlockModsAll[[3]])
+# where kME is the pattern change difference, and Med is the difference in median expression
+kMEsList<-BuildModMembership(MeMat = MEs, TCsLst = gene_list)
+
+# Check the names of the elements
+names(kMEsList)
+
+# Loop through each element in the kMEsList
+for (name in names(kMEsList)) {
+  # Convert the list element to a data frame
+  df <- as.data.frame(kMEsList[[name]])
+  
+  # Add row names as a new column 'CycID'
+  df$CycID <- rownames(df)
+  
+  # Rename the score column to 'ModuleMembership_score'
+  colnames(df)[1] <- "ModuleMembership_score"
+  
+  # Reorder columns to have CycID as the first column
+  df <- df[, c("CycID", "ModuleMembership_score")]
+  
+  # Create a file name using the element name
+  file_name <- paste0(name, ".csv")
+  
+  # Save the data frame as a CSV file
+  write.csv(df, file_name, row.names = FALSE)
+}
+
+# Optionally, print a message indicating the files have been saved
+print("CSV files have been saved.")
+################################################
+#Add JTK data to each module
+
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster/0.05p_sorted_JTK_Data")
+library(readxl)
+# List of file names
+file_names <- c("Cluster0_0.05.xlsx", 
+                "Cluster1_0.05.xlsx", 
+                "Cluster2_0.05.xlsx", 
+                "Cluster3_0.05.xlsx", 
+                "Cluster4_0.05.xlsx", 
+                "Cluster5_0.05.xlsx", 
+                "Cluster6_0.05.xlsx", 
+                "Cluster7_0.05.xlsx", 
+                "Cluster8_0.05.xlsx", 
+                "Cluster9_0.05.xlsx", 
+                "Cluster10_0.05.xlsx", 
+                "Cluster11_0.05.xlsx", 
+                "Cluster12_0.05.xlsx", 
+                "Cluster13_0.05.xlsx", 
+                "Cluster14_0.05.xlsx", 
+                "Cluster15_0.05.xlsx",
+                "Cluster16_0.05.xlsx", 
+                "Cluster17_0.05.xlsx", 
+                "Cluster18_0.05.xlsx")
+
+
+# Initialize an empty list to store the data frames
+all_matrices <- list()
+
+# Loop through each file name to read and store the data frames
+for (file in file_names) {
+  # Read the matrix data from the CSV file
+  matrix_data <- read_xlsx(file)
+  
+  # Extract the cluster number from the file name
+  cluster_number <- sub(".*Cluster([0-9]+).*", "\\1", file)
+  
+  # Add the cluster number to the gene IDs
+  matrix_data <- matrix_data %>%
+    mutate(CycID = paste0(CycID, "_", cluster_number))
+  
+  # Store the data frame in the list
+  all_matrices <- append(all_matrices, list(matrix_data))
+}
+
+
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+library(dplyr)
+
+# Check column types (optional, for understanding the issue)
+lapply(all_matrices, function(df) sapply(df, class))
+
+# Convert ADJ.P column to numeric in all data frames
+all_matrices <- lapply(all_matrices, function(df) {
+  df$ADJ.P <- as.numeric(df$ADJ.P)
+  df
+})
+
+# Combine the data frames
+combined_df <- bind_rows(all_matrices)
+
+# View the combined data frame
+print(head(combined_df))
+
+write.csv(combined_df, "JTK_ALL_Clusters_matrix_0.05p.csv", row.names = FALSE)
+
+gene_modules <- read_csv("gene_modules.csv")
+# Ensure it is a data frame
+gene_modules <- as.data.frame(gene_modules)
+
+colnames(gene_modules)
+
+# Perform the join
+merged_df <- left_join(combined_df, gene_modules, by = c("CycID" = "GeneID"))
+
+write.csv(merged_df, "JTK_ALL_Clusters_Module_Colors_matrix_0.05p.csv", row.names = FALSE)
+
+JTK_ALL_Clusters_matrix_0_05p <- read_csv("JTK_ALL_Clusters_matrix_0.05p.csv")
+
+
+###########################
+#Calculating zScore 
+
+Expression_Normalised <- read_csv("Combined_ZTs_Deseq_normalized_counts_cyclic_0.05p_matrix_Avg.csv")
+
+# Convert Expression_Normalised to a data frame if it's not already
+Expression_Normalised <- as.data.frame(Expression_Normalised)
+# Assuming Expression_Normalised is your data frame
+colnames(Expression_Normalised)
+
+
+colnames(merged_df)
+
+# Perform the join
+merged_df <- left_join(merged_df, Expression_Normalised, by = c("CycID" = "Gene"))
+
+# Check the first few rows of the resulting data frame
+head(merged_df)
+
+write.csv(merged_df, "JTK_Clusters_Module_Colors_Expression_matrix_0.05.csv", row.names = FALSE)
+
+colnames(merged_df)
+
+JTK_Clusters_Module_Colors_Expression_matrix_0_05 <- read_csv("JTK_Clusters_Module_Colors_Expression_matrix_0.05.csv")
+
+# Define the columns representing the expression values
+expression_columns <- colnames(JTK_Clusters_Module_Colors_Expression_matrix_0_05)[grepl("^ZT", colnames(JTK_Clusters_Module_Colors_Expression_matrix_0_05))]
+
+# Reshape the data to long format for easier manipulation
+merged_data_long <- JTK_Clusters_Module_Colors_Expression_matrix_0_05 %>%
+  pivot_longer(cols = all_of(expression_columns), names_to = "ZT", values_to = "Expression") %>%
+  mutate(ReplicateGroup = sub("([A-Za-z0-9]+)[A-B]$", "\\1", ZT))
+
+
+
+library(tidyr)
+
+# Example assuming merged_data_long is your data frame
+merged_data_long <- merged_data_long %>%
+  separate(col = 'CycID', into = c("gid", "cluster"), sep = "_", remove = FALSE)
+
+# Print the modified data frame
+print(merged_data_long)
+colnames(merged_data_long)
+# Calculate the average and standard deviation of replicates at each ZT for each gene
+merged_data_long <- merged_data_long %>%
+  group_by(CycID, ReplicateGroup) %>%
+  mutate(AvgExprs = mean(Expression, na.rm = TRUE),
+         sdExprs = sd(Expression, na.rm = TRUE)) %>%
+  ungroup()
+library(dplyr)
+
+
+subsetted_data <- merged_data_long %>%
+  select(CycID, ADJ.P, PER, LAG, AMP, Color, ReplicateGroup, AvgExprs) %>%
+  distinct(CycID, ReplicateGroup, .keep_all = TRUE)  # Keep only unique combinations of Gene and ZT
+
+# Print the subsetted data
+print(subsetted_data)
+
+subsetted_data <- subsetted_data %>%
+  separate(col = 'CycID', into = c("gid", "cluster"), sep = "_", remove = FALSE)# Calculate the average and standard deviation over the whole time course by gene
+colnames(subsetted_data)
+
+library(dplyr)
+# Pivot the data to wide format
+wide_data <- subsetted_data %>%
+  pivot_wider(
+    id_cols = CycID,  # Column containing gene identifiers
+    names_from = ReplicateGroup,  # Column with time point identifiers (ZT0, ZT04, etc.)
+    values_from = AvgExprs  # Values to populate the matrix
+  )
+
+
+# Print the wide format data
+print(wide_data)
+
+# Calculate average expression for each gene across all time points
+wide_data$TCavg <- rowMeans(wide_data[, -1])  # Calculate row means excluding the CycID column
+
+# Calculate standard deviation for each gene across all time points
+wide_data$TCsd <- apply(wide_data[, -1], 1, sd)  # Calculate standard deviation across each row
+
+# Print the results
+print(wide_data[, c("CycID", "TCavg", "TCsd")])
+
+colnames(wide_data)
+# Create a new data frame with CycID, TCavg, and TCsd only
+wide_data <- wide_data[, c("CycID", "TCavg", "TCsd")]
+# Merge calculated metrics back into wide_data
+subsetted_data <- subsetted_data %>%
+  left_join(wide_data, by = "CycID")
+
+# Calculate the z-score
+subsetted_data <- subsetted_data %>%
+  mutate(zScore = (AvgExprs - TCavg)/TCsd)
+
+colnames(subsetted_data)
+
+write.csv(subsetted_data, "zScore_Module_Colors_Expression_matrix_0_05.csv", row.names = FALSE)
+
+cleaned_data = subsetted_data
+# Ensure 'ReplicateGroup' is treated as a factor and ordered correctly
+cleaned_data$ReplicateGroup <- factor(cleaned_data$ReplicateGroup, levels = unique(cleaned_data$ReplicateGroup))
+
+# Generate the plot
+p <- ggplot(cleaned_data, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(CycID, Color)), alpha = 0.5) +
+  facet_wrap(~ Color, scales = "free_y", ncol = 3) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Each Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))  # Adjusting the vertical and horizontal justification
+
+# Print the plot to the interactive session
+print(p)
+
+# Save the plot to a PDF file with specified width and height
+ggsave("plot_zscore_0.05p.pdf", plot = p, width = 20, height = 20)
+
+
+# Get unique colors from cleaned_data
+colors <- unique(cleaned_data$Color)
+
+# Open a PDF device
+pdf("ZScores_All_Colors_0.05p.pdf")
+
+# Loop through each color
+for (color in colors) {
+  # Subset data for the current color
+  color_data <- subset(cleaned_data, Color == color)
+  
+  # Ensure 'ReplicateGroup' is treated as a factor and ordered correctly within the subset
+  color_data$ReplicateGroup <- factor(color_data$ReplicateGroup, levels = unique(color_data$ReplicateGroup))
+  
+  # Create the plot
+  p <- ggplot(color_data, aes(x = ReplicateGroup, y = zScore)) +
+    geom_line(aes(group = interaction(CycID, Color)), alpha = 0.5) +
+    theme_minimal() +
+    labs(title = paste("Z-Scores for Color:", color),
+         x = "Time Points (ZT)",
+         y = "Z-Score") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))  # Adjusting the vertical and horizontal justification
+  
+  # Print the plot to the PDF device
+  print(p)
+}
+
+# Close the PDF device
+dev.off()
+```
+
+#########Average zScore Plots for each module
+
+Filtering Modules by Membership_score 0.6
+
+```{r}
+module_black <- read_csv("module_black.csv")
+MEblack <- read_csv("MEblack.csv")
+
+# Perform the join
+merged_df <- left_join(module_black, MEblack, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEblack_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEblack_0_6 <- read_csv("MEblack_0.6.csv")
+MEblack_0_6_df <- left_join(MEblack_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEblack_0_6_df, "zScore_MEblack_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEblack_0_6_df <- transform(MEblack_0_6_df, Color = Color.x)
+MEblack_0_6_df$ReplicateGroup <- factor(MEblack_0_6_df$ReplicateGroup, levels = unique(MEblack_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEblack_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEblack_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEblack_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEblack_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEblack_0_6_df$ReplicateGroup <- as.factor(MEblack_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEblack_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEblack",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+p
+ggsave(filename = "Average Z Score_MEblack.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_blue <- read_csv("module_blue.csv")
+MEblue <- read_csv("MEblue.csv")
+
+# Perform the join
+merged_df <- left_join(module_blue, MEblue, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEblue_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEblue_0_6 <- read_csv("MEblue_0.6.csv")
+MEblue_0_6_df <- left_join(MEblue_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEblue_0_6_df, "zScore_MEblue_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEblue_0_6_df <- transform(MEblue_0_6_df, Color = Color.x)
+MEblue_0_6_df$ReplicateGroup <- factor(MEblue_0_6_df$ReplicateGroup, levels = unique(MEblue_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEblue_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEblue_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEblue_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEblue_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEblue_0_6_df$ReplicateGroup <- as.factor(MEblue_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEblue_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEblue",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEblue.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_brown <- read_csv("module_brown.csv")
+MEbrown <- read_csv("MEbrown.csv")
+
+# Perform the join
+merged_df <- left_join(module_brown, MEbrown, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEbrown_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEbrown_0_6 <- read_csv("MEbrown_0.6.csv")
+MEbrown_0_6_df <- left_join(MEbrown_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEbrown_0_6_df, "zScore_MEbrown_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEbrown_0_6_df <- transform(MEbrown_0_6_df, Color = Color.x)
+MEbrown_0_6_df$ReplicateGroup <- factor(MEbrown_0_6_df$ReplicateGroup, levels = unique(MEbrown_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEbrown_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEbrown_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEbrown_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEbrown_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEbrown_0_6_df$ReplicateGroup <- as.factor(MEbrown_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEbrown_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEbrown",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEbrown.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_cyan <- read_csv("module_cyan.csv")
+MEcyan <- read_csv("MEcyan.csv")
+
+# Perform the join
+merged_df <- left_join(module_cyan, MEcyan, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEcyan_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEcyan_0_6 <- read_csv("MEcyan_0.6.csv")
+MEcyan_0_6_df <- left_join(MEcyan_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEcyan_0_6_df, "zScore_MEcyan_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEcyan_0_6_df <- transform(MEcyan_0_6_df, Color = Color.x)
+MEcyan_0_6_df$ReplicateGroup <- factor(MEcyan_0_6_df$ReplicateGroup, levels = unique(MEcyan_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEcyan_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEcyan_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEcyan_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEcyan_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEcyan_0_6_df$ReplicateGroup <- as.factor(MEcyan_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEcyan_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEcyan",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEcyan.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_darkgreen <- read_csv("module_darkgreen.csv")
+MEdarkgreen <- read_csv("MEdarkgreen.csv")
+
+# Perform the join
+merged_df <- left_join(module_darkgreen, MEdarkgreen, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEdarkgreen_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEdarkgreen_0_6 <- read_csv("MEdarkgreen_0.6.csv")
+MEdarkgreen_0_6_df <- left_join(MEdarkgreen_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEdarkgreen_0_6_df, "zScore_MEdarkgreen_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEdarkgreen_0_6_df <- transform(MEdarkgreen_0_6_df, Color = Color.x)
+MEdarkgreen_0_6_df$ReplicateGroup <- factor(MEdarkgreen_0_6_df$ReplicateGroup, levels = unique(MEdarkgreen_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEdarkgreen_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEdarkgreen_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEdarkgreen_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEdarkgreen_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEdarkgreen_0_6_df$ReplicateGroup <- as.factor(MEdarkgreen_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEdarkgreen_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEdarkgreen",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEdarkgreen.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_darkgrey <- read_csv("module_darkgrey.csv")
+MEdarkgrey <- read_csv("MEdarkgrey.csv")
+
+# Perform the join
+merged_df <- left_join(module_darkgrey, MEdarkgrey, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEdarkgrey_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEdarkgrey_0_6 <- read_csv("MEdarkgrey_0.6.csv")
+MEdarkgrey_0_6_df <- left_join(MEdarkgrey_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEdarkgrey_0_6_df, "zScore_MEdarkgrey_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEdarkgrey_0_6_df <- transform(MEdarkgrey_0_6_df, Color = Color.x)
+MEdarkgrey_0_6_df$ReplicateGroup <- factor(MEdarkgrey_0_6_df$ReplicateGroup, levels = unique(MEdarkgrey_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEdarkgrey_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEdarkgrey_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEdarkgrey_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEdarkgrey_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEdarkgrey_0_6_df$ReplicateGroup <- as.factor(MEdarkgrey_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEdarkgrey_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEdarkgrey",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEdarkgrey.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_darkturquoise <- read_csv("module_darkturquoise.csv")
+MEdarkturquoise <- read_csv("MEdarkturquoise.csv")
+
+# Perform the join
+merged_df <- left_join(module_darkturquoise, MEdarkturquoise, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEdarkturquoise_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEdarkturquoise_0_6 <- read_csv("MEdarkturquoise_0.6.csv")
+MEdarkturquoise_0_6_df <- left_join(MEdarkturquoise_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEdarkturquoise_0_6_df, "zScore_MEdarkturquoise_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEdarkturquoise_0_6_df <- transform(MEdarkturquoise_0_6_df, Color = Color.x)
+MEdarkturquoise_0_6_df$ReplicateGroup <- factor(MEdarkturquoise_0_6_df$ReplicateGroup, levels = unique(MEdarkturquoise_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEdarkturquoise_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEdarkturquoise_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEdarkturquoise_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEdarkturquoise_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEdarkturquoise_0_6_df$ReplicateGroup <- as.factor(MEdarkturquoise_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEdarkturquoise_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEdarkturquoise",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEdarkturquoise.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_green <- read_csv("module_green.csv")
+MEgreen <- read_csv("MEgreen.csv")
+
+# Perform the join
+merged_df <- left_join(module_green, MEgreen, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEgreen_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEgreen_0_6 <- read_csv("MEgreen_0.6.csv")
+MEgreen_0_6_df <- left_join(MEgreen_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEgreen_0_6_df, "zScore_MEgreen_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEgreen_0_6_df <- transform(MEgreen_0_6_df, Color = Color.x)
+MEgreen_0_6_df$ReplicateGroup <- factor(MEgreen_0_6_df$ReplicateGroup, levels = unique(MEgreen_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEgreen_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEgreen_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEgreen_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEgreen_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEgreen_0_6_df$ReplicateGroup <- as.factor(MEgreen_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEgreen_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEgreen",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEgreen.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_grey60 <- read_csv("module_grey60.csv")
+MEgrey60 <- read_csv("MEgrey60.csv")
+
+# Perform the join
+merged_df <- left_join(module_grey60, MEgrey60, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEgrey60_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEgrey60_0_6 <- read_csv("MEgrey60_0.6.csv")
+MEgrey60_0_6_df <- left_join(MEgrey60_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEgrey60_0_6_df, "zScore_MEgrey60_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEgrey60_0_6_df <- transform(MEgrey60_0_6_df, Color = Color.x)
+MEgrey60_0_6_df$ReplicateGroup <- factor(MEgrey60_0_6_df$ReplicateGroup, levels = unique(MEgrey60_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEgrey60_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEgrey60_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEgrey60_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEgrey60_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEgrey60_0_6_df$ReplicateGroup <- as.factor(MEgrey60_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEgrey60_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEgrey60",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEgrey60.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_lightcyan <- read_csv("module_lightcyan.csv")
+MElightcyan <- read_csv("MElightcyan.csv")
+
+# Perform the join
+merged_df <- left_join(module_lightcyan, MElightcyan, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MElightcyan_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MElightcyan_0_6 <- read_csv("MElightcyan_0.6.csv")
+MElightcyan_0_6_df <- left_join(MElightcyan_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MElightcyan_0_6_df, "zScore_MElightcyan_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MElightcyan_0_6_df <- transform(MElightcyan_0_6_df, Color = Color.x)
+MElightcyan_0_6_df$ReplicateGroup <- factor(MElightcyan_0_6_df$ReplicateGroup, levels = unique(MElightcyan_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MElightcyan_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MElightcyan_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MElightcyan_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MElightcyan_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MElightcyan_0_6_df$ReplicateGroup <- as.factor(MElightcyan_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MElightcyan_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MElightcyan",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MElightcyan.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_lightgreen <- read_csv("module_lightgreen.csv")
+MElightgreen <- read_csv("MElightgreen.csv")
+
+# Perform the join
+merged_df <- left_join(module_lightgreen, MElightgreen, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MElightgreen_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MElightgreen_0_6 <- read_csv("MElightgreen_0.6.csv")
+MElightgreen_0_6_df <- left_join(MElightgreen_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MElightgreen_0_6_df, "zScore_MElightgreen_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MElightgreen_0_6_df <- transform(MElightgreen_0_6_df, Color = Color.x)
+MElightgreen_0_6_df$ReplicateGroup <- factor(MElightgreen_0_6_df$ReplicateGroup, levels = unique(MElightgreen_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MElightgreen_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MElightgreen_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MElightgreen_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MElightgreen_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MElightgreen_0_6_df$ReplicateGroup <- as.factor(MElightgreen_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MElightgreen_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MElightgreen",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MElightgreen.pdf", plot = p)
+dev.off()
+#Filtering Modules by Membership_score 0.6
+module_lightyellow <- read_csv("module_lightyellow.csv")
+MElightyellow <- read_csv("MElightyellow.csv")
+
+# Perform the join
+merged_df <- left_join(module_lightyellow, MElightyellow, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MElightyellow_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MElightyellow_0_6 <- read_csv("MElightyellow_0.6.csv")
+MElightyellow_0_6_df <- left_join(MElightyellow_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MElightyellow_0_6_df, "zScore_MElightyellow_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MElightyellow_0_6_df <- transform(MElightyellow_0_6_df, Color = Color.x)
+MElightyellow_0_6_df$ReplicateGroup <- factor(MElightyellow_0_6_df$ReplicateGroup, levels = unique(MElightyellow_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MElightyellow_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MElightyellow_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MElightyellow_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MElightyellow_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MElightyellow_0_6_df$ReplicateGroup <- as.factor(MElightyellow_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MElightyellow_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MElightyellow",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MElightyellow.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_magenta <- read_csv("module_magenta.csv")
+MEmagenta <- read_csv("MEmagenta.csv")
+
+# Perform the join
+merged_df <- left_join(module_magenta, MEmagenta, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEmagenta_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEmagenta_0_6 <- read_csv("MEmagenta_0.6.csv")
+MEmagenta_0_6_df <- left_join(MEmagenta_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEmagenta_0_6_df, "zScore_MEmagenta_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEmagenta_0_6_df <- transform(MEmagenta_0_6_df, Color = Color.x)
+MEmagenta_0_6_df$ReplicateGroup <- factor(MEmagenta_0_6_df$ReplicateGroup, levels = unique(MEmagenta_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEmagenta_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEmagenta_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEmagenta_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEmagenta_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEmagenta_0_6_df$ReplicateGroup <- as.factor(MEmagenta_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEmagenta_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEmagenta",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEmagenta.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_midnightblue <- read_csv("module_midnightblue.csv")
+MEmidnightblue <- read_csv("MEmidnightblue.csv")
+
+# Perform the join
+merged_df <- left_join(module_midnightblue, MEmidnightblue, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEmidnightblue_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEmidnightblue_0_6 <- read_csv("MEmidnightblue_0.6.csv")
+MEmidnightblue_0_6_df <- left_join(MEmidnightblue_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEmidnightblue_0_6_df, "zScore_MEmidnightblue_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEmidnightblue_0_6_df <- transform(MEmidnightblue_0_6_df, Color = Color.x)
+MEmidnightblue_0_6_df$ReplicateGroup <- factor(MEmidnightblue_0_6_df$ReplicateGroup, levels = unique(MEmidnightblue_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEmidnightblue_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEmidnightblue_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEmidnightblue_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEmidnightblue_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEmidnightblue_0_6_df$ReplicateGroup <- as.factor(MEmidnightblue_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEmidnightblue_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEmidnightblue",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEmidnightblue.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_pink <- read_csv("module_pink.csv")
+MEpink <- read_csv("MEpink.csv")
+
+# Perform the join
+merged_df <- left_join(module_pink, MEpink, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEpink_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEpink_0_6 <- read_csv("MEpink_0.6.csv")
+MEpink_0_6_df <- left_join(MEpink_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEpink_0_6_df, "zScore_MEpink_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEpink_0_6_df <- transform(MEpink_0_6_df, Color = Color.x)
+MEpink_0_6_df$ReplicateGroup <- factor(MEpink_0_6_df$ReplicateGroup, levels = unique(MEpink_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEpink_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEpink_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEpink_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEpink_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEpink_0_6_df$ReplicateGroup <- as.factor(MEpink_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEpink_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEpink",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEpink.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_purple <- read_csv("module_purple.csv")
+MEpurple <- read_csv("MEpurple.csv")
+
+# Perform the join
+merged_df <- left_join(module_purple, MEpurple, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEpurple_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEpurple_0_6 <- read_csv("MEpurple_0.6.csv")
+MEpurple_0_6_df <- left_join(MEpurple_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEpurple_0_6_df, "zScore_MEpurple_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEpurple_0_6_df <- transform(MEpurple_0_6_df, Color = Color.x)
+MEpurple_0_6_df$ReplicateGroup <- factor(MEpurple_0_6_df$ReplicateGroup, levels = unique(MEpurple_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEpurple_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEpurple_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEpurple_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEpurple_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEpurple_0_6_df$ReplicateGroup <- as.factor(MEpurple_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEpurple_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEpurple",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEpurple.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_red <- read_csv("module_red.csv")
+MEred <- read_csv("MEred.csv")
+
+# Perform the join
+merged_df <- left_join(module_red, MEred, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEred_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEred_0_6 <- read_csv("MEred_0.6.csv")
+MEred_0_6_df <- left_join(MEred_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEred_0_6_df, "zScore_MEred_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEred_0_6_df <- transform(MEred_0_6_df, Color = Color.x)
+MEred_0_6_df$ReplicateGroup <- factor(MEred_0_6_df$ReplicateGroup, levels = unique(MEred_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEred_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEred_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEred_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEred_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEred_0_6_df$ReplicateGroup <- as.factor(MEred_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEred_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEred",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEred.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_royalblue <- read_csv("module_royalblue.csv")
+MEroyalblue <- read_csv("MEroyalblue.csv")
+
+# Perform the join
+merged_df <- left_join(module_royalblue, MEroyalblue, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEroyalblue_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEroyalblue_0_6 <- read_csv("MEroyalblue_0.6.csv")
+MEroyalblue_0_6_df <- left_join(MEroyalblue_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEroyalblue_0_6_df, "zScore_MEroyalblue_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEroyalblue_0_6_df <- transform(MEroyalblue_0_6_df, Color = Color.x)
+MEroyalblue_0_6_df$ReplicateGroup <- factor(MEroyalblue_0_6_df$ReplicateGroup, levels = unique(MEroyalblue_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEroyalblue_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEroyalblue_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEroyalblue_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEroyalblue_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEroyalblue_0_6_df$ReplicateGroup <- as.factor(MEroyalblue_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEroyalblue_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEroyalblue",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEroyalblue.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_salmon <- read_csv("module_salmon.csv")
+MEsalmon <- read_csv("MEsalmon.csv")
+
+# Perform the join
+merged_df <- left_join(module_salmon, MEsalmon, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEsalmon_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEsalmon_0_6 <- read_csv("MEsalmon_0.6.csv")
+MEsalmon_0_6_df <- left_join(MEsalmon_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEsalmon_0_6_df, "zScore_MEsalmon_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEsalmon_0_6_df <- transform(MEsalmon_0_6_df, Color = Color.x)
+MEsalmon_0_6_df$ReplicateGroup <- factor(MEsalmon_0_6_df$ReplicateGroup, levels = unique(MEsalmon_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEsalmon_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEsalmon_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEsalmon_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEsalmon_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEsalmon_0_6_df$ReplicateGroup <- as.factor(MEsalmon_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEsalmon_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEsalmon",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEsalmon.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_tan <- read_csv("module_tan.csv")
+MEtan <- read_csv("MEtan.csv")
+
+# Perform the join
+merged_df <- left_join(module_tan, MEtan, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEtan_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEtan_0_6 <- read_csv("MEtan_0.6.csv")
+MEtan_0_6_df <- left_join(MEtan_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEtan_0_6_df, "zScore_MEtan_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEtan_0_6_df <- transform(MEtan_0_6_df, Color = Color.x)
+MEtan_0_6_df$ReplicateGroup <- factor(MEtan_0_6_df$ReplicateGroup, levels = unique(MEtan_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEtan_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEtan_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEtan_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEtan_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEtan_0_6_df$ReplicateGroup <- as.factor(MEtan_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEtan_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEtan",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEtan.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_turquoise <- read_csv("module_turquoise.csv")
+MEturquoise <- read_csv("MEturquoise.csv")
+
+# Perform the join
+merged_df <- left_join(module_turquoise, MEturquoise, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEturquoise_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEturquoise_0_6 <- read_csv("MEturquoise_0.6.csv")
+MEturquoise_0_6_df <- left_join(MEturquoise_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEturquoise_0_6_df, "zScore_MEturquoise_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEturquoise_0_6_df <- transform(MEturquoise_0_6_df, Color = Color.x)
+MEturquoise_0_6_df$ReplicateGroup <- factor(MEturquoise_0_6_df$ReplicateGroup, levels = unique(MEturquoise_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEturquoise_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEturquoise_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEturquoise_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEturquoise_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEturquoise_0_6_df$ReplicateGroup <- as.factor(MEturquoise_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEturquoise_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEturquoise",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEturquoise.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_yellow <- read_csv("module_yellow.csv")
+MEyellow <- read_csv("MEyellow.csv")
+
+# Perform the join
+merged_df <- left_join(module_yellow, MEyellow, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEyellow_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEyellow_0_6 <- read_csv("MEyellow_0.6.csv")
+MEyellow_0_6_df <- left_join(MEyellow_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEyellow_0_6_df, "zScore_MEyellow_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEyellow_0_6_df <- transform(MEyellow_0_6_df, Color = Color.x)
+MEyellow_0_6_df$ReplicateGroup <- factor(MEyellow_0_6_df$ReplicateGroup, levels = unique(MEyellow_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEyellow_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEyellow_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEyellow_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEyellow_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEyellow_0_6_df$ReplicateGroup <- as.factor(MEyellow_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEyellow_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEyellow",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEyellow.pdf", plot = p)
+dev.off()
+#Filtering Modules by Membership_score 0.6
+module_darkorange <- read_csv("module_darkorange.csv")
+MEdarkorange <- read_csv("MEdarkorange.csv")
+
+# Perform the join
+merged_df <- left_join(module_darkorange, MEdarkorange, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEdarkorange_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEdarkorange_0_6 <- read_csv("MEdarkorange_0.6.csv")
+MEdarkorange_0_6_df <- left_join(MEdarkorange_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEdarkorange_0_6_df, "zScore_MEdarkorange_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEdarkorange_0_6_df <- transform(MEdarkorange_0_6_df, Color = Color.x)
+MEdarkorange_0_6_df$ReplicateGroup <- factor(MEdarkorange_0_6_df$ReplicateGroup, levels = unique(MEdarkorange_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEdarkorange_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEdarkorange_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEdarkorange_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEdarkorange_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEdarkorange_0_6_df$ReplicateGroup <- as.factor(MEdarkorange_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEdarkorange_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEdarkorange",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEdarkorange.pdf", plot = p)
+dev.off()
+
+
+#Filtering Modules by Membership_score 0.6
+module_orange <- read_csv("module_orange.csv")
+MEorange <- read_csv("MEorange.csv")
+
+# Perform the join
+merged_df <- left_join(module_orange, MEorange, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEorange_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEorange_0_6 <- read_csv("MEorange_0.6.csv")
+MEorange_0_6_df <- left_join(MEorange_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEorange_0_6_df, "zScore_MEorange_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEorange_0_6_df <- transform(MEorange_0_6_df, Color = Color.x)
+MEorange_0_6_df$ReplicateGroup <- factor(MEorange_0_6_df$ReplicateGroup, levels = unique(MEorange_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEorange_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEorange_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEorange_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEorange_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEorange_0_6_df$ReplicateGroup <- as.factor(MEorange_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEorange_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEorange",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEorange.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_greenyellow <- read_csv("module_greenyellow.csv")
+MEgreenyellow <- read_csv("MEgreenyellow.csv")
+
+# Perform the join
+merged_df <- left_join(module_greenyellow, MEgreenyellow, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEgreenyellow_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEgreenyellow_0_6 <- read_csv("MEgreenyellow_0.6.csv")
+MEgreenyellow_0_6_df <- left_join(MEgreenyellow_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEgreenyellow_0_6_df, "zScore_MEgreenyellow_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEgreenyellow_0_6_df <- transform(MEgreenyellow_0_6_df, Color = Color.x)
+MEgreenyellow_0_6_df$ReplicateGroup <- factor(MEgreenyellow_0_6_df$ReplicateGroup, levels = unique(MEgreenyellow_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEgreenyellow_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEgreenyellow_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEgreenyellow_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEgreenyellow_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEgreenyellow_0_6_df$ReplicateGroup <- as.factor(MEgreenyellow_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEgreenyellow_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEgreenyellow",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEgreenyellow.pdf", plot = p)
+dev.off()
+
+#Filtering Modules by Membership_score 0.6
+module_darkred <- read_csv("module_darkred.csv")
+MEdarkred <- read_csv("MEdarkred.csv")
+
+# Perform the join
+merged_df <- left_join(module_darkred, MEdarkred, by = c("GeneID" = "CycID"))
+
+colnames(merged_df)
+
+# Assuming merged_df is your data frame
+filtered_df <- merged_df[merged_df$ModuleMembership_score > 0.6, c("GeneID", "Color", "ModuleMembership_score")]
+
+# Print or further process filtered_df
+print(filtered_df)
+
+write.csv(filtered_df, file = "MEdarkred_0.6.csv", row.names = FALSE)
+
+zScore_Module_Colors_Expression_matrix_0_05 <- read_csv("zScore_Module_Colors_Expression_matrix_0_05.csv")
+MEdarkred_0_6 <- read_csv("MEdarkred_0.6.csv")
+MEdarkred_0_6_df <- left_join(MEdarkred_0_6, zScore_Module_Colors_Expression_matrix_0_05, by = c("GeneID" = "CycID"))
+write.csv(MEdarkred_0_6_df, "zScore_MEdarkred_0_6_df_0.05.csv", row.names = FALSE)
+
+# Rename Color.x to Color
+MEdarkred_0_6_df <- transform(MEdarkred_0_6_df, Color = Color.x)
+MEdarkred_0_6_df$ReplicateGroup <- factor(MEdarkred_0_6_df$ReplicateGroup, levels = unique(MEdarkred_0_6_df$ReplicateGroup))
+
+# Create the plot
+plot <- ggplot(MEdarkred_0_6_df, aes(x = ReplicateGroup, y = zScore)) +
+  geom_line(aes(group = interaction(GeneID, Color)), alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Z-Scores for Color",
+       x = "Time Points (ZT)",
+       y = "Z-Score") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Print the plot to check for errors
+print(plot)
+# Save the plot as a PDF
+ggsave(filename = "MEdarkred_ZScores_0.6MM_scor_0.05p.pdf", plot = plot)
+
+colnames(MEdarkred_0_6_df)
+###########
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+# Example data structure
+# df <- data.frame(GeneID = rep(c("Gene1", "Gene2", "Gene3"), each = 5),
+#                  ReplicateGroup = rep(1:5, times = 3),
+#                  Zscore = rnorm(15))
+# Check the structure of the data frame
+str(MEdarkred_0_6_df)
+# Ensure ReplicateGroup is treated as a factor or numeric
+MEdarkred_0_6_df$ReplicateGroup <- as.factor(MEdarkred_0_6_df$ReplicateGroup)
+# Calculate mean and standard deviation for each replicate group
+df_summary <- MEdarkred_0_6_df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+# Create the line graph with shaded ribbon
+p<- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), alpha = 0.2) +
+  labs(title = "Average Z Score_MEdarkred",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal()
+ggsave(filename = "Average Z Score_MEdarkred.pdf", plot = p)
+dev.off()
+
+
+```
+
+```{r}
+library(magick)
+library(gridExtra)
+library(ggplot2)
+library(grid)
+install.packages("pdftools")
+install.packages("magick")
+library(pdftools)
+library(magick)
+# Directory containing the PDF files
+pdf_dir <- "/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster"
+pdf_files <- list.files(pdf_dir, pattern = "Average Z Score_.*\\.pdf$", full.names = TRUE)
+
+# Function to convert a PDF to a raster image (PNG format)
+pdf_to_image <- function(pdf_file) {
+  image_read_pdf(pdf_file, density = 150) # Increase density for better resolution
+}
+
+# Convert all PDFs to images
+images <- lapply(pdf_files, pdf_to_image)
+
+# Combine images into a single figure using gridExtra
+image_plots <- lapply(images, function(img) {
+  rasterGrob(as.raster(img), interpolate = TRUE)
+})
+
+# Define layout for combining plots
+combined_plot <- marrangeGrob(grobs = image_plots, nrow = 10, ncol = 3)
+
+# Save the combined plot to a single PDF
+pdf("Combined_Modules_Average_ZScores_All2.pdf", width = 20, height = 15)
+grid.draw(combined_plot)
+dev.off()
+
+
+# Define layout for combining plots (6 rows and 5 columns for 26 graphs)
+combined_plot <- marrangeGrob(grobs = image_plots, nrow = 6, ncol = 5)
+
+# Save the combined plot to a single PDF
+pdf("Combined_Modules_Average_ZScores_All3.pdf", width = 20, height = 15)
+grid.draw(combined_plot)
+dev.off()
+
+##################
+#making one big data frame for all
+
+# Load necessary libraries
+library(dplyr)
+
+# Define the directory containing your CSV files
+csv_dir <- "/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster"  # Change this to your actual directory
+
+# List all CSV files in the directory (assuming all are relevant)
+csv_files <- list.files(csv_dir, pattern = "_0.6.csv$", full.names = TRUE)
+
+# Read each CSV file and store them in a list of data frames
+data_list <- lapply(csv_files, read.csv)
+
+# Optionally: Ensure all data frames have the same structure (column names and order)
+# Example: If you want to merge them by columns, ensure the column names match
+# You can check column names for each file using colnames(data_list[[1]])
+
+# Combine all data frames into one big matrix (by rows or columns)
+# To combine by columns (add columns from each CSV):
+combined_matrix <- bind_cols(data_list)
+
+# If you want to merge by rows (add rows from each CSV):
+# combined_matrix <- bind_rows(data_list)
+
+# Optionally: Add a new column to identify the source file for each module
+# This can help if you want to trace which data came from which module
+for (i in seq_along(data_list)) {
+  data_list[[i]]$Module <- gsub("_0.6.csv", "", basename(csv_files[i]))  # Extract module name
+}
+
+# Combine by rows to keep all data (adding a 'Module' column to trace the source)
+combined_matrix <- bind_rows(data_list)
+
+# Save the combined matrix to a new CSV file
+write.csv(combined_matrix, "combined_matrix_all_modules.csv", row.names = FALSE)
+
+# Print the first few rows of the combined matrix to check
+head(combined_matrix)
+
+# Assuming 'combined_matrix' is the data frame that contains your data
+
+# Extract gene names (e.g., "AT1G01520" from "AT1G01520_0") from the 'GeneID' column
+combined_matrix$GeneName <- gsub("_.*", "", combined_matrix$GeneID)
+
+# Check the result
+head(combined_matrix)
+
+# Save the combined matrix to a new CSV file
+write.csv(combined_matrix, "combined_matrix_all_modules.csv", row.names = FALSE)
+
+
+
+# Remove duplicates by GeneName and Module, keeping only unique combinations
+unique_genes <- combined_matrix %>%
+  distinct(GeneName, Module, .keep_all = TRUE)
+
+# View the resulting data frame
+print(unique_genes)
+
+
+
+# Count the number of distinct modules each gene appears in
+gene_module_count <- combined_matrix %>%
+  group_by(GeneName) %>%
+  summarise(num_modules = n_distinct(Module)) %>%
+  filter(num_modules > 1)
+
+# Now filter the original data frame to include only genes that appear in multiple modules
+genes_in_multiple_modules <- combined_matrix %>%
+  filter(combined_matrix$GeneName %in% gene_module_count$GeneName)
+
+# View the resulting data frame
+print(genes_in_multiple_modules)
+
+
+write.csv(genes_in_multiple_modules, "genes_in_multiple_modules.csv", row.names = FALSE)
+
+```
+
+Hierarchical clustering of the modules
+Corelation matrix and heatmap
+```{r}
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+"/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster"
+# Step 1: Define the list of module files
+module_files <- list.files(pattern = "zScore_ME.*_0.6_df_0.05.csv") # Matches files like MEdarkred_0.6.csv, etc.
+
+# Step 2: Read and process each file
+module_expression_list <- list()
+
+for (file in module_files) {
+  # Read the file
+  module_data <- read_csv(file)
+  
+  # Extract the module name from the filename
+  module_name <- gsub("ME|_0.6.csv", "", file)
+  
+  # Calculate the mean z-score for each replicate group
+  module_expression <- module_data %>%
+    group_by(ReplicateGroup) %>%
+    summarise(mean_zScore = mean(zScore, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Module = module_name)
+  
+  # Add the result to the list
+  module_expression_list[[module_name]] <- module_expression
+}
+
+# Step 3: Combine all modules into a single data frame
+combined_expression <- bind_rows(module_expression_list)
+library(tibble)
+# Step 4: Reshape data into a wide format (modules as columns, replicate groups as rows)
+module_matrix <- combined_expression %>%
+  pivot_wider(names_from = Module, values_from = mean_zScore) %>%
+  column_to_rownames("ReplicateGroup")
+
+# Step 5: Calculate the correlation matrix
+correlation_matrix <- cor(module_matrix, use = "pairwise.complete.obs")
+
+# Assuming `correlation_matrix` is your correlation matrix
+# Get the current row and column names
+current_names <- rownames(correlation_matrix)
+
+# Replace the names using gsub
+updated_names <- gsub("zScore_|_0_6_df_0.05|\\.csv", "", current_names)
+updated_names <- paste0("ME", updated_names)
+
+# Assign the updated names back to the matrix
+rownames(correlation_matrix) <- updated_names
+colnames(correlation_matrix) <- updated_names
+
+colnames(correlation_matrix)
+
+library(viridis)
+# Step 6: Plot the correlation heatmap
+heatmapColors <- viridis(50, option = "inferno")
+
+pheatmap(
+  correlation_matrix,
+  cluster_rows = TRUE,    # Cluster modules
+  cluster_cols = TRUE,    # Cluster modules
+  color = heatmapColors, # Color gradient
+  main = "Module Correlation Heatmap"
+)
+
+# Save the heatmap as a PDF
+pdf("Module_Correlation_Heatmap_0.6.pdf")
+pheatmap(
+  correlation_matrix,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  color = colorRampPalette(c("blue", "white", "red"))(50),
+  main = "Module Correlation Heatmap"
+)
+dev.off()
+
+# Hierarchical clustering
+
+sampleTree <- hclust(dist(t(correlation_matrix)), method = "average")
+
+plot(sampleTree)
+
+# 1. Calculate the distance matrix and perform hierarchical clustering (as you're already doing)
+distance_matrix <- dist(t(correlation_matrix))
+hc <- hclust(distance_matrix, method = "average")
+
+# 2. Create a vector of numbers to use as labels
+num_labels <- 1:length(hc$labels) # Generates numbers from 1 to the number of modules
+
+# 3. Plot the dendrogram with the new labels
+plot(hc, labels = num_labels,
+     main = "Cluster Dendrogram",
+     xlab = NULL, ylab = "Height")
+```
+
+Module_data_sorted_on_basis_of_Hierarichal_clusterin_0.6mm
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+####Code to make big data frame after hierarichal slustering of filtered modules on basis of average zScore for each replicate group
+
+library(tidyverse)
+
+# Directory containing module files
+module_dir <- "/Users/alveenazulfiqar/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster"
+
+# List all files matching the pattern
+module_files <- list.files(module_dir, pattern = "zScore_ME.*_0.6_df_0.05.csv", full.names = TRUE)
+
+# Initialize an empty list to store data
+all_clade_data <- list()
+
+# Define clade assignments (based on dendrogram)
+clade_map <- list(
+  Clade1 = c("MEpink", "MEpurple", "MEdarkred", "MEdarkgreen", "MEtan"),
+  Clade2 = c("MEmagenta", "MEgreen", "MEroyalblue", "MEorange", "MElightcyan", "MEblue", "MElightyellow"),
+  Clade3 = c("MEdarkorange", "MEsalmon", "MEbrown", "MEdarkgrey"),
+  Clade4 = c("MEcyan", "MEgreenyellow", "MEyellow", "MEdarkturquoise", "MEred"),
+  Clade5 = c("MEblack", "MEgrey60", "MEturquoise", "MElightgreen", "MEmidnightblue")
+)
+
+
+head(clade_map)
+
+
+# Flatten the clade_map
+clade_map_flat <- stack(clade_map)
+colnames(clade_map_flat) <- c("Module", "Clade")
+
+
+# Process each file
+for (file in module_files) {
+  # Read the file
+  module_data <- read_csv(file)
+  
+  # Extract the module name from the filename
+  module_name <- str_extract(file, "ME[a-zA-Z0-9]+")
+  
+  # Add the module and clade info to the data
+  module_data <- module_data %>%
+    mutate(
+      Module = module_name,
+      Clade = clade_map_flat$Clade[match(module_name, clade_map_flat$Module)]
+    )
+  
+  # Append to the list
+  all_clade_data[[module_name]] <- module_data
+}
+
+# Combine all data into a single data frame
+final_clade_df <- bind_rows(all_clade_data)
+
+###Subsetting data frame to have Gene info followed by cluster info and clade info
+
+library(tidyverse)
+library(dplyr)
+# Assuming the input data frame is named 'df'
+# Example: Read the input file
+# df <- read_csv("your_file.csv")
+
+# Extract the TAIR Gene ID and Cluster
+final_clade_df <- final_clade_df %>%
+  mutate(
+    Gene = sub("_.*", "", GeneID),     # Extract TAIR Gene ID
+    Cluster = sub(".*_", "", GeneID)  # Extract Cluster number
+  )
+
+final_clade_df <- as_tibble(final_clade_df)
+
+subset_df2 <- final_clade_df %>%
+  dplyr::select(Gene, Cluster, Clade, Module) %>%
+  distinct(Gene, Module, Cluster, .keep_all = TRUE)
+
+
+# Step 1: Add "Cluster" as a column with the prefix "Cluster"
+df <- subset_df2 %>%
+  mutate(Cluster = paste0("Cluster", Cluster))  # Add prefix "Cluster" to the cluster numbers
+library(tidyr)
+
+df <- as.data.frame(df)
+
+names(df)
+library(dplyr)
+library(tidyr)
+
+reshaped_df1 <- df %>%
+  dplyr::select(Gene, Cluster, Clade) %>%   # Explicitly call select from dplyr
+  pivot_wider(
+    names_from = Cluster,                  # Use "Cluster" column to create new columns
+    values_from = Cluster,                 # Populate values with the Cluster info
+    values_fill = list(Cluster = NA)       # Fill missing values with NA
+  )
+
+X <- apply(reshaped_df1, 1, function(row) {
+  # Identify which columns (from 3 onward) are NOT NA
+  non_na_indices <- which(!is.na(row[3:length(row)])) 
+  
+  # Create a result vector with NA, preserving the first element
+  result <- row
+  result[3:length(row)] <- NA  # Set all columns from 3 onward to NA
+  
+  # Replace the non-NA positions with the Clade value (second column)
+  result[non_na_indices + 2] <- row[2]
+  
+  return(result)
+})
+
+
+# Transpose the result
+X_transposed <- t(X)
+
+# Convert the transposed result to a data frame
+df_result <- as.data.frame(X_transposed, stringsAsFactors = FALSE)
+
+# Optional: Rename the columns based on the original structure, if necessary
+colnames(df_result) <- colnames(reshaped_df1)
+
+# View the final data frame
+df_result
+
+
+df_result <- df_result[, !colnames(df_result) %in% "Clade"]
+
+library(dplyr)
+
+# Consolidate rows for the same Gene
+df_result_consolidated <- df_result %>%
+  group_by(Gene) %>%                              # Group by the Gene column
+  summarize(across(everything(), ~ 
+                     ifelse(all(is.na(.)), NA, paste(na.omit(.), collapse = ",")), .names = "consolidated_{col}")) %>% ungroup()                           # For each column, combine non-NA values
+df_result_consolidated
+
+colnames(df_result_consolidated) <- colnames(df_result)
+
+
+# Optional: Save the reshaped data to a CSV file
+write_csv(df_result_consolidated, "Gene_Clade_consolidated_0.6MM_frame.csv")
+
+
+
+# Install if needed
+install.packages("BiocManager")
+BiocManager::install("org.At.tair.db")
+
+# Load the package
+library(org.At.tair.db)
+columns(org.At.tair.db)
+# Extract TAIR IDs for each Gene
+gene_tair_ids <- select(org.At.tair.db, keys = df_result_consolidated$Gene, columns = "GENENAME", keytype = "TAIR")
+
+
+
+
+colnames(df_result_consolidated)
+colnames(gene_tair_ids)
+
+
+merged_df <- merge(df_result_consolidated, gene_tair_ids, by.x = "Gene", by.y = "TAIR")
+
+# Step 4: Sort the data frame by ClusterCount in descending order
+merged_df <- merged_df %>%
+  arrange(desc(ClusterCount)) 
+
+# Optional: Save the reshaped data to a CSV file
+write_csv(merged_df, "Gene_Clade_consolidated_annotated_module_0.6MM_frame.csv")
+```
+
+Average Clade Graphs(Figure 3 A)
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(magrittr)
+
+#clade1
+
+zScore_MEtan_0_6_df_0_05 <- read_csv("zScore_MEtan_0_6_df_0.05.csv")
+
+MEtan_0_6_df <- transform(zScore_MEtan_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEpink_0_6_df_0_05 <- read_csv("zScore_MEpink_0_6_df_0.05.csv")
+
+MEpink_0_6_df <- transform(zScore_MEpink_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEdarkgreen_0_6_df_0_05 <- read_csv("zScore_MEdarkgreen_0_6_df_0.05.csv")
+
+MEdarkgreen_0_6_df <- transform(zScore_MEdarkgreen_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEdarkred_0_6_df_0_05 <- read_csv("zScore_MEdarkred_0_6_df_0.05.csv")
+
+MEdarkred_0_6_df <- transform(zScore_MEdarkred_0_6_df_0_05, Color = Color.x)
+
+
+
+zScore_MEpurple_0_6_df_0_05 <- read_csv("zScore_MEpurple_0_6_df_0.05.csv")
+
+MEpurple_0_6_df <- transform(zScore_MEpurple_0_6_df_0_05, Color = Color.x)
+
+
+colnames(MEpurple_0_6_df)
+
+
+
+# Define the columns you want to keep
+selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore")
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns.  Handle missing columns gracefully.
+  df_selected <- df %>%
+    select(any_of(selected_columns))  # Use any_of to avoid errors if a column is missing
+  
+  return(df_selected)
+}
+
+# Process each color
+MEtan_0_6_df <- process_data("zScore_MEtan_0_6_df_0.05.csv")
+MEpink_0_6_df <- process_data("zScore_MEpink_0_6_df_0.05.csv")
+MEdarkgreen_0_6_df <- process_data("zScore_MEdarkgreen_0_6_df_0.05.csv")
+MEdarkred_0_6_df <- process_data("zScore_MEdarkred_0_6_df_0.05.csv")
+MEpurple_0_6_df <- process_data("zScore_MEpurple_0_6_df_0.05.csv")
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEtan_0_6_df,
+  MEpink_0_6_df,
+  MEdarkgreen_0_6_df,
+  MEdarkred_0_6_df,
+  MEpurple_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+
+
+
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+
+# Calculate mean and standard deviation for each replicate group
+df_summary <- df_combined %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+
+p <- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), fill = "blue", alpha = 0.2) +
+  labs(title = "Average Z Score_Clade1",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the plot
+print(p)
+
+# Save the plot with higher resolution
+ggsave("high_resolution_plot.png", plot = p, width = 16, height = 14, dpi = 1200)
+
+
+
+###Clade 2 
+
+zScore_MEmagenta_0_6_df_0_05 <- read_csv("zScore_MEmagenta_0_6_df_0.05.csv")
+
+MEmagenta_0_6_df <- transform(zScore_MEmagenta_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEgreen_0_6_df_0_05 <- read_csv("zScore_MEgreen_0_6_df_0.05.csv")
+
+MEgreen_0_6_df <- transform(zScore_MEgreen_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEroyalblue_0_6_df_0_05 <- read_csv("zScore_MEroyalblue_0_6_df_0.05.csv")
+
+MEroyalblue_0_6_df <- transform(zScore_MEroyalblue_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEorange_0_6_df_0_05 <- read_csv("zScore_MEorange_0_6_df_0.05.csv")
+
+MEorange_0_6_df <- transform(zScore_MEorange_0_6_df_0_05, Color = Color.x)
+
+
+
+zScore_MElightcyan_0_6_df_0_05 <- read_csv("zScore_MElightcyan_0_6_df_0.05.csv")
+
+MElightcyan_0_6_df <- transform(zScore_MElightcyan_0_6_df_0_05, Color = Color.x)
+
+zScore_MEblue_0_6_df_0_05 <- read_csv("zScore_MEblue_0_6_df_0.05.csv")
+
+MEblue_0_6_df <- transform(zScore_MEblue_0_6_df_0_05, Color = Color.x)
+
+zScore_MElightyellow_0_6_df_0_05 <- read_csv("zScore_MElightyellow_0_6_df_0.05.csv")
+
+MElightyellow_0_6_df <- transform(zScore_MElightyellow_0_6_df_0_05, Color = Color.x)
+
+
+# Define the columns you want to keep
+selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore")
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns.  Handle missing columns gracefully.
+  df_selected <- df %>%
+    select(any_of(selected_columns))  # Use any_of to avoid errors if a column is missing
+  
+  return(df_selected)
+}
+
+# Process each color
+MEmagenta_0_6_df <- process_data("zScore_MEmagenta_0_6_df_0.05.csv")
+MEgreen_0_6_df <- process_data("zScore_MEgreen_0_6_df_0.05.csv")
+MEroyalblue_0_6_df <- process_data("zScore_MEroyalblue_0_6_df_0.05.csv")
+MEorange_0_6_df <- process_data("zScore_MEorange_0_6_df_0.05.csv")
+MElightcyan_0_6_df <- process_data("zScore_MElightcyan_0_6_df_0.05.csv")
+MEblue_0_6_df <- process_data("zScore_MEblue_0_6_df_0.05.csv")
+MElightyellow_0_6_df <- process_data("zScore_MElightyellow_0_6_df_0.05.csv")
+# Bind all data frames
+df_combined <- bind_rows(
+  MEmagenta_0_6_df,
+  MEgreen_0_6_df,
+  MEroyalblue_0_6_df,
+  MEorange_0_6_df,
+  MElightcyan_0_6_df,
+  MEblue_0_6_df,
+  MElightyellow_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+
+
+
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+
+# Calculate mean and smagentadard deviation for each replicate group
+df_summary <- df_combined %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+
+p <- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), fill = "red", alpha = 0.2) +
+  labs(title = "Average Z Score_Clade2",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the plot
+print(p)
+
+# Save the plot with higher resolution
+ggsave("high_resolution_plot_clade2.png", plot = p, width = 16, height = 14, dpi = 1200)
+
+
+
+#clade3
+
+zScore_MEdarkorange_0_6_df_0_05 <- read_csv("zScore_MEdarkorange_0_6_df_0.05.csv")
+
+MEdarkorange_0_6_df <- transform(zScore_MEdarkorange_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEsalmon_0_6_df_0_05 <- read_csv("zScore_MEsalmon_0_6_df_0.05.csv")
+
+MEsalmon_0_6_df <- transform(zScore_MEsalmon_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEbrown_0_6_df_0_05 <- read_csv("zScore_MEbrown_0_6_df_0.05.csv")
+
+MEbrown_0_6_df <- transform(zScore_MEbrown_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEdarkgrey_0_6_df_0_05 <- read_csv("zScore_MEdarkgrey_0_6_df_0.05.csv")
+
+MEdarkgrey_0_6_df <- transform(zScore_MEdarkgrey_0_6_df_0_05, Color = Color.x)
+
+
+
+
+# Define the columns you want to keep
+selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore")
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns.  Handle missing columns gracefully.
+  df_selected <- df %>%
+    select(any_of(selected_columns))  # Use any_of to avoid errors if a column is missing
+  
+  return(df_selected)
+}
+
+# Process each color
+MEdarkorange_0_6_df <- process_data("zScore_MEdarkorange_0_6_df_0.05.csv")
+MEsalmon_0_6_df <- process_data("zScore_MEsalmon_0_6_df_0.05.csv")
+MEbrown_0_6_df <- process_data("zScore_MEbrown_0_6_df_0.05.csv")
+MEdarkgrey_0_6_df <- process_data("zScore_MEdarkgrey_0_6_df_0.05.csv")
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEdarkorange_0_6_df,
+  MEsalmon_0_6_df,
+  MEbrown_0_6_df,
+  MEdarkgrey_0_6_df)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+
+
+
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+
+# Calculate mean and standard deviation for each replicate group
+df_summary <- df_combined %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+
+p <- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), fill = "darkgreen", alpha = 0.2) +
+  labs(title = "Average Z Score_Clade3",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the plot
+print(p)
+
+# Save the plot with higher resolution
+ggsave("high_resolution_plot_clade3.png", plot = p, width = 16, height = 14, dpi = 1200)
+
+zScore_MEcyan_0_6_df_0_05 <- read_csv("zScore_MEcyan_0_6_df_0.05.csv")
+
+MEcyan_0_6_df <- transform(zScore_MEcyan_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEgreenyellow_0_6_df_0_05 <- read_csv("zScore_MEgreenyellow_0_6_df_0.05.csv")
+
+MEgreenyellow_0_6_df <- transform(zScore_MEgreenyellow_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEyellow_0_6_df_0_05 <- read_csv("zScore_MEyellow_0_6_df_0.05.csv")
+
+MEyellow_0_6_df <- transform(zScore_MEyellow_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEdarkturquoise_0_6_df_0_05 <- read_csv("zScore_MEdarkturquoise_0_6_df_0.05.csv")
+
+MEdarkturquoise_0_6_df <- transform(zScore_MEdarkturquoise_0_6_df_0_05, Color = Color.x)
+
+zScore_MEred_0_6_df_0_05 <- read_csv("zScore_MEred_0_6_df_0.05.csv")
+
+MEred_0_6_df <- transform(zScore_MEred_0_6_df_0_05, Color = Color.x)
+
+
+# Define the columns you want to keep
+selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore")
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns.  Handle missing columns gracefully.
+  df_selected <- df %>%
+    select(any_of(selected_columns))  # Use any_of to avoid errors if a column is missing
+  
+  return(df_selected)
+}
+
+# Process each color
+MEcyan_0_6_df <- process_data("zScore_MEcyan_0_6_df_0.05.csv")
+MEgreenyellow_0_6_df <- process_data("zScore_MEgreenyellow_0_6_df_0.05.csv")
+MEyellow_0_6_df <- process_data("zScore_MEyellow_0_6_df_0.05.csv")
+MEdarkturquoise_0_6_df <- process_data("zScore_MEdarkturquoise_0_6_df_0.05.csv")
+MEred_0_6_df <- process_data("zScore_MEred_0_6_df_0.05.csv")
+# Bind all data frames
+df_combined <- bind_rows(
+  MEcyan_0_6_df,
+  MEgreenyellow_0_6_df,
+  MEyellow_0_6_df,
+  MEdarkturquoise_0_6_df,
+  MEred_0_6_df,
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+
+
+
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+
+# Calculate mean and standard deviation for each replicate group
+df_summary <- df_combined %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+
+p <- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), fill = "purple", alpha = 0.2) +
+  labs(title = "Average Z Score_Clade4",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the plot
+print(p)
+
+# Save the plot with higher resolution
+ggsave("high_resolution_plot_clade4.png", plot = p, width = 16, height = 14, dpi = 1200)
+
+
+#clade5
+
+zScore_MEblack_0_6_df_0_05 <- read_csv("zScore_MEblack_0_6_df_0.05.csv")
+
+MEblack_0_6_df <- transform(zScore_MEblack_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEgrey60_0_6_df_0_05 <- read_csv("zScore_MEgrey60_0_6_df_0.05.csv")
+
+MEgrey60_0_6_df <- transform(zScore_MEgrey60_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MEturquoise_0_6_df_0_05 <- read_csv("zScore_MEturquoise_0_6_df_0.05.csv")
+
+MEturquoise_0_6_df <- transform(zScore_MEturquoise_0_6_df_0_05, Color = Color.x)
+
+
+zScore_MElightgreen_0_6_df_0_05 <- read_csv("zScore_MElightgreen_0_6_df_0.05.csv")
+
+MElightgreen_0_6_df <- transform(zScore_MElightgreen_0_6_df_0_05, Color = Color.x)
+
+zScore_MEmidnightblue_0_6_df_0_05 <- read_csv("zScore_MEmidnightblue_0_6_df_0.05.csv")
+
+MEmidnightblue_0_6_df <- transform(zScore_MEmidnightblue_0_6_df_0_05, Color = Color.x)
+
+
+# Define the columns you want to keep
+selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore")
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns.  Handle missing columns gracefully.
+  df_selected <- df %>%
+    select(any_of(selected_columns))  # Use any_of to avoid errors if a column is missing
+  
+  return(df_selected)
+}
+
+# Process each color
+MEblack_0_6_df <- process_data("zScore_MEblack_0_6_df_0.05.csv")
+MEgrey60_0_6_df <- process_data("zScore_MEgrey60_0_6_df_0.05.csv")
+MEturquoise_0_6_df <- process_data("zScore_MEturquoise_0_6_df_0.05.csv")
+MElightgreen_0_6_df <- process_data("zScore_MElightgreen_0_6_df_0.05.csv")
+MEmidnightblue_0_6_df <- process_data("zScore_MEmidnightblue_0_6_df_0.05.csv")
+# Bind all data frames
+df_combined <- bind_rows(
+  MEblack_0_6_df,
+  MEgrey60_0_6_df,
+  MEturquoise_0_6_df,
+  MElightgreen_0_6_df,
+  MEmidnightblue_0_6_df,
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+
+
+
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+
+# Calculate mean and standard deviation for each replicate group
+df_summary <- df_combined %>%
+  group_by(ReplicateGroup) %>%
+  summarise(
+    mean_Zscore = mean(zScore, na.rm = TRUE),
+    sd_Zscore = sd(zScore, na.rm = TRUE)
+  )
+
+p <- ggplot(df_summary, aes(x = ReplicateGroup, y = mean_Zscore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_Zscore - sd_Zscore, ymax = mean_Zscore + sd_Zscore), fill = "darkturquoise", alpha = 0.2) +
+  labs(title = "Average Z Score_Clade5",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the plot
+print(p)
+
+# Save the plot with higher resolution
+ggsave("high_resolution_plot_clade5.png", plot = p, width = 16, height = 14, dpi = 1200)
+```
+
+Clade GO enrichment (Figure 3 A)
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+
+library(readr)
+
+
+Gene_Clade_consolidated_0_6MM_frame <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+
+library(clusterProfiler)
+library(dplyr)
+library(readxl)
+library(tidyr) 
+library(org.At.tair.db)
+library(ggplot2)
+# Read the data from an Excel file
+# Replace 'your_file.xlsx' with the path to your actual file
+data <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+# Clean data: Remove rows where Gene is NA
+data <- data %>% filter(!is.na(Gene))
+
+# Melt the data frame to long format to retain cluster information
+data_long <- data %>%
+  pivot_longer(cols = starts_with("Cluster"), 
+               names_to = "Cluster", 
+               values_to = "Clade") %>%
+  filter(!is.na(Clade))  # Remove NA values
+
+# Group by Clade
+clades <- data_long %>% group_by(Clade) %>% summarise(Genes = list(Gene))
+
+# Define a function to run GO enrichment analysis
+run_go_analysis <- function(modules) {
+  go_results <- enrichGO(gene = modules,
+                         OrgDb = org.At.tair.db,  # Arabidopsis database
+                         keyType = "TAIR",
+                         ont = "ALL",  # Biological Process
+                         pAdjustMethod = "BH",
+                         qvalueCutoff = 0.05,
+                         readable = TRUE)
+  return(go_results)
+}
+
+# Run GO analysis for each clade and store results
+results <- list()
+for (i in seq_along(clades$Clade)) {
+  clade <- clades$Clade[i]
+  modules <- clades$Genes[[i]]
+  
+  cat("Running GO analysis for", clade, "...\n")
+  results[[clade]] <- run_go_analysis(modules)
+  
+  # Save each GO result as a CSV file
+  write.csv(as.data.frame(results[[clade]]), file = paste0(clade, "_GO_results_ALL.csv"), row.names = FALSE)
+}
+
+# Create and save graphs for each clade's GO results
+for (clade in names(results)) {
+  go_data <- as.data.frame(results[[clade]])
+  
+  # Create a bar plot for the top 10 GO terms
+  plot <- ggplot(go_data[1:10, ], aes(x = reorder(Description, -Count), y = Count)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    coord_flip() +
+    labs(title = paste("Top 10 GO Terms for", clade),
+         x = "GO Terms",
+         y = "Gene Count") +
+    theme_minimal()
+  
+  # Save the plot
+  ggsave(filename = paste0(clade, "_GO_enrichment_plot_ALL.png"), plot = plot, width = 8, height = 6)
+}
+
+
+#####################################
+
+##Finding Common GO terms between clades 
+
+
+# Required packages
+library(clusterProfiler)
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(ggplot2)
+
+# Read the data from an Excel file
+data <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+# Clean data: Remove rows where Gene is NA
+data <- data %>% filter(!is.na(Gene))
+
+# Melt the data frame to long format to retain cluster information
+data_long <- data %>%
+  pivot_longer(cols = starts_with("Cluster"), 
+               names_to = "Cluster", 
+               values_to = "Clade") %>%
+  filter(!is.na(Clade))  # Remove NA values
+
+# Group by Clade
+clades <- data_long %>% group_by(Clade) %>% summarise(Genes = list(Gene))
+
+# Define a function to run GO enrichment analysis
+run_go_analysis <- function(modules) {
+  go_results <- enrichGO(gene = modules,
+                         OrgDb = org.At.tair.db,  # Arabidopsis database
+                         keyType = "TAIR",
+                         ont = "ALL",  # Biological Process
+                         pAdjustMethod = "BH",
+                         qvalueCutoff = 0.05,
+                         readable = TRUE)
+  return(go_results)
+}
+
+# Run GO analysis for each clade and store results
+results <- list()
+for (i in seq_along(clades$Clade)) {
+  clade <- clades$Clade[i]
+  modules <- clades$Genes[[i]]
+  
+  cat("Running GO analysis for", clade, "...\n")
+  results[[clade]] <- run_go_analysis(modules)
+  
+  # Save each GO result as a CSV file
+  write.csv(as.data.frame(results[[clade]]), file = paste0(clade, "_GO_results_ALL.csv"), row.names = FALSE)
+}
+
+# Create a list to store GO terms across clades
+go_terms_list <- lapply(results, function(res) as.data.frame(res)$ID)
+
+# Function to find common GO terms for given clade combinations
+find_common_go_terms <- function(clade_indices) {
+  common_terms <- Reduce(intersect, go_terms_list[clade_indices])
+  return(common_terms)
+}
+
+# Create a data frame to store common GO terms for different combinations
+common_go_data <- data.frame(Clade_Combination = character(),
+                             GO_ID = character(),
+                             Description = character(),
+                             stringsAsFactors = FALSE)
+
+# Check common GO terms for combinations of 2 to 5 clades
+for (n in 2:length(results)) {
+  combos <- combn(seq_along(results), n)
+  
+  for (i in 1:ncol(combos)) {
+    common_terms <- find_common_go_terms(combos[, i])
+    
+    for (go_id in common_terms) {
+      description <- unique(unlist(lapply(combos[, i], function(clade_index) {
+        as.data.frame(results[[clade_index]])$Description[as.data.frame(results[[clade_index]])$ID == go_id]
+      })))
+      
+      common_go_data <- rbind(common_go_data, 
+                              data.frame(Clade_Combination = paste(combos[, i], collapse = ", "),
+                                         GO_ID = go_id,
+                                         Description = description,
+                                         stringsAsFactors = FALSE))
+    }
+  }
+}
+
+# Save the common GO terms data to a CSV file
+write.csv(common_go_data, "common_GO_terms_combinations.csv", row.names = FALSE)
+
+# Output common GO terms for various combinations
+cat("Common GO Terms for Clade Combinations:\n")
+print(common_go_data)
+
+
+#saving result list as data frame
+
+# Convert results list to a data frame, including gene information
+all_go_data <- do.call(rbind, lapply(names(results), function(clade_name) {
+  go_data <- as.data.frame(results[[clade_name]])
+  
+  # Add a new column for Clade
+  go_data$Clade <- clade_name
+  
+  # Retrieve gene information for the specific clade
+  gene_info <- clades$Genes[[which(clades$Clade == clade_name)]]
+  
+  # Create a string of genes for each GO term (if necessary)
+  go_data$Genes <- paste(gene_info, collapse = ", ")
+  
+  return(go_data)
+}))
+
+library(dplyr)  # Ensure dplyr is loaded
+library(tibble) # Load tibble package
+
+# Convert all_go_data to a tibble
+
+all_go_data <- as_tibble(all_go_data)
+
+
+# Save the complete GO data frame to a CSV file
+write.csv(all_go_data, "all_GO_terms_with_clade_and_gene_info.csv", row.names = FALSE)
+```
+
+Propotional_Clade_Cluster_data
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+library(tidyverse)
+Gene_Clade_consolidated_0_6MM_frame <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+
+# Load necessary libraries
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+
+# View the first few rows of your data frame
+head(Gene_Clade_consolidated_0_6MM_frame)
+colnames(Gene_Clade_consolidated_0_6MM_frame)
+new_names <- c("Gene", "c0", "c1", "c5", "c2", "c11", "c3", "c4", "c12_2", "c10", "c9", "c14", "c6", "c12_0", "c7", "c8_0", "c12_1", "c13", "c8_1", "c15")
+
+colnames(Gene_Clade_consolidated_0_6MM_frame) = new_names
+
+colnames(Gene_Clade_consolidated_0_6MM_frame)
+desired_order <- c("Gene", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8_0", "c8_1", "c9", "c10", "c11", "c12_0", "c12_1", "c12_2", "c13", "c14", "c15")
+colnames(Gene_Clade_consolidated_0_6MM_frame)
+# Reorder the columns of the data frame
+Gene_Clade_consolidated_0_6MM_frame <- Gene_Clade_consolidated_0_6MM_frame[, desired_order]
+
+# 1. Count the number of genes assigned to each cluster-clade combination
+# Melt the data frame into a long format
+long_data <- Gene_Clade_consolidated_0_6MM_frame %>%
+  melt(id.vars = "Gene", variable.name = "Cluster", value.name = "Clade") %>%
+  filter(!is.na(Clade))  # Remove rows where Clade is NA
+
+# Count the number of genes per cluster and clade
+cluster_clade_counts <- long_data %>%
+  group_by(Cluster, Clade) %>%
+  summarise(GeneCount = n(), .groups = "drop")
+
+# Display the cluster-clade gene counts
+print(cluster_clade_counts)
+
+# 2. Visualize the distribution of genes across clusters and clades
+# Define a color palette for the clades
+clade_colors <- c(
+  "Clade1" = "#99AAEC",
+  "Clade2" = "pink",
+  "Clade3" = "#A6D870",
+  "Clade4" = "#CBA7E8",
+  "Clade5" = "#92F1EF"
+  # Add more clades and colors as needed
+)
+
+# Calculate proportions within each cluster
+cluster_clade_proportions <- cluster_clade_counts %>%
+  group_by(Cluster) %>%
+  mutate(Proportion = GeneCount / sum(GeneCount)) %>%
+  ungroup()
+
+# Create the proportional bar plot
+my_plot <- ggplot(cluster_clade_proportions, aes(x = Cluster, y = Proportion, fill = Clade)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = clade_colors) +  # Apply the color palette
+  labs(
+    title = "Proportional Distribution of Genes Across Clusters and Clades",
+    x = "Cluster",
+    y = "Proportion of Genes"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    title = element_text(size = 16, hjust = 0.5)
+  ) +
+  # Add gene counts on top of each bar segment
+  geom_text(aes(label = GeneCount), 
+            position = position_stack(vjust = 0.5),
+            size = 3) # Adjust size as needed
+
+# Save the plot as a PNG file:
+ggsave("cluster_clade_proportional_distribution_with_counts_propotional_data_menuscript_data.png", plot = my_plot, width = 10, height = 6, units = "in", dpi = 600)
+
+```
+
+Figure 3 C
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+library(tidyverse)
+
+
+Gene_Clade_consolidated_0_6MM_frame <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+
+
+# Load necessary libraries
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+
+# View the first few rows of your data frame
+head(Gene_Clade_consolidated_0_6MM_frame)
+
+# 1. Count the number of genes assigned to each cluster-clade combination
+# Melt the data frame into a long format
+long_data <- Gene_Clade_consolidated_0_6MM_frame %>%
+  melt(id.vars = "Gene", variable.name = "Cluster", value.name = "Clade") %>%
+  filter(!is.na(Clade))  # Remove rows where Clade is NA
+
+# Count the number of genes per cluster and clade
+cluster_clade_counts <- long_data %>%
+  group_by(Cluster, Clade) %>%
+  summarise(GeneCount = n(), .groups = "drop")
+
+# Display the cluster-clade gene counts
+print(cluster_clade_counts)
+
+# 2. Visualize the distribution of genes across clusters and clades
+# Define a color palette for the clades
+clade_colors <- c(
+  "Clade1" = "#99AAEC",
+  "Clade2" = "pink",
+  "Clade3" = "#A6D870",
+  "Clade4" = "#CBA7E8",
+  "Clade5" = "#92F1EF"
+  # Add more clades and colors as needed
+)
+
+my_plot <- ggplot(cluster_clade_counts, aes(x = Cluster, y = GeneCount, fill = Clade)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = clade_colors) +  # Apply the color palette
+  labs(
+    title = "Distribution of Genes Across Clusters and Clades",
+    x = "Cluster",
+    y = "Number of Genes"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12), # Increase x-axis label font size
+    axis.title.x = element_text(size = 14),                         # Increase x-axis title font size
+    axis.text.y = element_text(size = 12),                         # Increase y-axis label font size
+    axis.title.y = element_text(size = 14),                         # Increase y-axis title font size
+    title = element_text(size = 16, hjust = 0.5)                   # Increase title font size and center it
+  )
+
+# Save the plot as a PNG file:
+ggsave("cluster_clade_distribution.png", plot = my_plot, width = 10, height = 6, units = "in", dpi = 600)
+
+
+
+# Count the number of distinct clades for each gene
+genes_in_multiple_clades <- long_data %>%
+  group_by(Gene) %>%
+  summarize(CladeCount = n_distinct(Clade), .groups = "drop") %>%
+  filter(CladeCount >= 2)  # Filter for genes present in two or more clades
+
+# View the result
+print(genes_in_multiple_clades)
+
+# Group by Gene and concatenate Cluster and Clade values
+result_df <- long_data %>%
+  group_by(Gene) %>%
+  summarize(
+    Clusters = paste(unique(Cluster), collapse = ", "),
+    Clades = paste(unique(Clade), collapse = ", "),
+    .groups = "drop"
+  )
+
+# View the result
+print(result_df)
+
+write_csv(result_df, "new_genes_in_multiple_clades.csv")
+################
+
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+
+# Assuming your data frame is named df_clean
+# Split the Clades into separate rows and count the number of clades per gene
+df_separated <- result_df %>%
+  separate_rows(Clades, sep = ", ") %>%
+  group_by(Gene) %>%
+  mutate(CladeCount = n_distinct(Clades)) %>%
+  ungroup()
+
+# Create sub-data frames based on the number of clades
+genes_in_1_clade <- df_separated %>%
+  filter(CladeCount == 1) %>%
+  distinct(Gene, Clades)
+
+# Assuming df_separated is already created and includes CladeCount
+# Group by Gene and concatenate Clades into a single string
+genes_in_2_clades <- df_separated %>%
+  filter(CladeCount == 2) %>%
+  group_by(Gene) %>%
+  summarise(Clades = paste(unique(Clades), collapse = ", "), .groups = "drop")
+
+genes_in_3_clades <- df_separated %>%
+  filter(CladeCount == 3) %>%
+  group_by(Gene) %>%
+  summarise(Clades = paste(unique(Clades), collapse = ", "), .groups = "drop")
+
+
+# You can continue this for more clade counts as needed
+# For example, for up to 4 clades
+genes_in_4_clades <- df_separated %>%
+  filter(CladeCount == 4) %>%
+  group_by(Gene) %>%
+  summarise(Clades = paste(unique(Clades), collapse = ", "), .groups = "drop")
+
+########################################
+
+
+genes_in_2_clades <- df_separated %>%
+  filter(CladeCount == 2) %>%
+  group_by(Gene) %>%
+  summarise(Clades = paste(unique(Clades), collapse = ", "), .groups = "drop")
+
+# Create the adjacency matrix
+adjacency_data <- genes_in_2_clades %>%
+  mutate(Clades = str_split(Clades, ", ")) %>%
+  unnest(Clades) %>%
+  count(Gene, Clades) %>%
+  spread(Clades, n, fill = 0)
+
+# Define the adjacency matrix
+adj_matrix <- as.matrix(adjacency_data[,-1])  # Remove Gene column for matrix
+
+
+
+
+# Set row names
+rownames(adj_matrix) <- df_separated$Gene
+
+adj_matrix <- data.frame(adj_matrix)
+
+# Summarize gene counts for each combination of clades
+summary_data <- as.data.frame(table(
+  Clade1 = rowSums(adj_matrix[, 1:5] == 1) > 0,
+  Clade2 = rowSums(adj_matrix[, 1:5] == 1) > 0
+))
+
+
+# Calculate the counts for combinations of clades
+Count <- c(
+  sum(adj_matrix$Clade1 == 1 & adj_matrix$Clade2 == 1),
+  sum(adj_matrix$Clade1 == 1 & adj_matrix$Clade3 == 1),
+  sum(adj_matrix$Clade1 == 1 & adj_matrix$Clade4 == 1),
+  sum(adj_matrix$Clade1 == 1 & adj_matrix$Clade5 == 1),
+  sum(adj_matrix$Clade2 == 1 & adj_matrix$Clade3 == 1),
+  sum(adj_matrix$Clade2 == 1 & adj_matrix$Clade4 == 1),
+  sum(adj_matrix$Clade2 == 1 & adj_matrix$Clade5 == 1),
+  sum(adj_matrix$Clade3 == 1 & adj_matrix$Clade4 == 1),
+  sum(adj_matrix$Clade3 == 1 & adj_matrix$Clade5 == 1),
+  sum(adj_matrix$Clade4 == 1 & adj_matrix$Clade5 == 1)
+)
+
+# Create a data frame for Circos plot
+circus_data <- data.frame(
+  Clades = c("Clade1 & Clade2", "Clade1 & Clade3", "Clade1 & Clade4", "Clade1 & Clade5",
+             "Clade2 & Clade3", "Clade2 & Clade4", "Clade2 & Clade5",
+             "Clade3 & Clade4", "Clade3 & Clade5", "Clade4 & Clade5"),
+  Count = Count
+)
+
+
+# Split the Clades into separate columns
+clade_split <- do.call(rbind, strsplit(circus_data$Clades, " & "))
+
+# Create a unique list of clades
+unique_clades <- unique(c(clade_split))
+
+# Initialize a square matrix
+square_matrix <- matrix(0, nrow = length(unique_clades), ncol = length(unique_clades),
+                        dimnames = list(unique_clades, unique_clades))
+
+# Fill in the matrix with counts
+for (i in 1:nrow(circus_data)) {
+  clades <- clade_split[i, ]
+  square_matrix[clades[1], clades[2]] <- circus_data$Count[i]
+  square_matrix[clades[2], clades[1]] <- circus_data$Count[i]  # Fill the opposite direction
+}
+
+# View the resulting square matrix
+print(square_matrix)
+# Convert the matrix to a data frame for writing
+square_matrix_df <- as.data.frame(square_matrix)
+# Add row names as a column
+square_matrix_df$Clades <- rownames(square_matrix_df)
+
+# Reorder columns to have Clades first
+square_matrix_df <- square_matrix_df[, c(ncol(square_matrix_df), 1:(ncol(square_matrix_df) - 1))]
+
+# Write to CSV
+write_csv(square_matrix_df, "square_matrix_genes_in_2_clades.csv")
+Reset_data_frame_square_matrix_genes_in_2_clades <- read_excel("Reset_data_frame_square_matrix_genes_in_2_clades.xlsx")
+
+
+# Assuming square_matrix_genes_in_2_clades is already defined
+Reset_data_frame_square_matrix_genes_in_2_clades <- as.data.frame(Reset_data_frame_square_matrix_genes_in_2_clades)
+
+# Remove the 'Clades' column by selecting all other columns
+Reset_data_frame_square_matrix_genes_in_2_clades_df <- Reset_data_frame_square_matrix_genes_in_2_clades[, -1]
+
+Reset_data_frame_square_matrix_genes_in_2_clades_df
+
+# Set row names
+rownames(Reset_data_frame_square_matrix_genes_in_2_clades_df) <- Reset_data_frame_square_matrix_genes_in_2_clades$Clades
+
+# Load the required library
+library(circlize)
+
+# Assuming square_matrix_genes_in_2_clades_df is your data frame
+# Convert to matrix (excluding row names)
+square_matrix_genes_in_2_clades_matrix <- as.matrix(Reset_data_frame_square_matrix_genes_in_2_clades_df)
+
+# Ensure the row and column names are set correctly
+rownames(square_matrix_genes_in_2_clades_matrix) <- colnames(Reset_data_frame_square_matrix_genes_in_2_clades)
+
+
+circos.clear()
+circos.clear()
+
+# Define color for each clade
+clade_colors <- c("Clade1" = "#99AAEC", "Clade2" = "pink",
+                  "Clade3" = "#A6D870", "Clade4" = "#CBA7E8",
+                  "Clade5" = "#92F1EF")
+# Create the chord diagram
+chordDiagram(square_matrix_genes_in_2_clades_matrix, grid.col = clade_colors)
+
+
+# Define the order of sectors (clades)
+sector_order <- c("Clade3", "Clade2", "Clade1", "Clade4", "Clade5")
+chordDiagram(square_matrix_genes_in_2_clades_matrix, grid.col = clade_colors, order = sector_order)
+
+
+# Add title
+title("Circos Plot of Gene Combinations Between Clades")
+
+```
+
+Combinations of gene in different clades from same clusters
+
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+library(tidyverse)
+
+
+Gene_Clade_consolidated_0_6MM_frame <- read_csv("Gene_Clade_consolidated_0.6MM_frame.csv")
+
+
+
+# Load necessary libraries
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+
+
+# Function to subset genes in specific clades from specified clusters
+subset_genes_all <- function(df, clades, clusters) {
+  results <- list()
+  
+  # Loop through each specified cluster
+  for (cluster in clusters) {
+    if (cluster %in% names(df)) {
+      # Filter for specified clades in the current cluster
+      clade_data <- df %>%
+        filter(!!sym(cluster) %in% clades) %>%
+        select(Gene, !!sym(cluster))
+      
+      if (nrow(clade_data) > 0) {
+        # Ensure the column names are consistent
+        colnames(clade_data) <- c("Gene", "Clade")
+        results[[cluster]] <- clade_data
+      } else {
+        warning(paste("No genes found in", cluster, "for specified clades."))
+      }
+    } else {
+      warning(paste("Cluster name", cluster, "not found in data frame."))
+    }
+  }
+  
+  # Combine results from specified clusters
+  if (length(results) > 0) {
+    combined_results <- do.call(rbind, results)
+    # Find genes that are present in both clades across the specified clusters
+    gene_counts <- combined_results %>%
+      group_by(Gene) %>%
+      summarize(CladeCount = n_distinct(Clade)) %>%
+      filter(CladeCount == length(clades))
+    
+    # Return the final subset of genes
+    return(gene_counts$Gene)
+  } else {
+    return(character())  # Return an empty character vector if no results
+  }
+}
+
+# Specify clades and clusters
+clades_to_find <- c('Clade2', 'Clade5')  # Clades to check
+clusters_to_check <- c('Cluster1', 'Cluster10')  # Specified clusters
+
+# Get subset of genes
+subset_result <- subset_genes_all(Gene_Clade_consolidated_0_6MM_frame, clades_to_find, clusters_to_check)
+print(subset_result)
+
+
+
+#####Clade3 and Clade 2
+
+
+# Specify clades and clusters
+clades_to_find <- c('Clade3', 'Clade2')  # Clades to check
+clusters_to_check <- c('Cluster1', 'Cluster10')  # Specified clusters
+
+# Get subset of genes
+subset_result <- subset_genes_all(Gene_Clade_consolidated_0_6MM_frame, clades_to_find, clusters_to_check)
+print(subset_result)
+
+
+##########
+
+
+# Specify clades and clusters
+clades_to_find <- c('Clade5', 'Clade4')  # Clades to check
+clusters_to_check <- c('Cluster1', 'Cluster10')  # Specified clusters
+
+# Get subset of genes
+subset_result <- subset_genes_all(Gene_Clade_consolidated_0_6MM_frame, clades_to_find, clusters_to_check)
+print(subset_result)
+
+
+# Specify clades and clusters
+clades_to_find <- c('Clade1', 'Clade2')  # Clades to check
+clusters_to_check <- c('Cluster1', 'Cluster10')  # Specified clusters
+
+# Get subset of genes
+subset_result <- subset_genes_all(Gene_Clade_consolidated_0_6MM_frame, clades_to_find, clusters_to_check)
+print(subset_result)
+```
+
+Figure 3 D
+
+
+```{r}
+setwd("~/Desktop/Mirror/JTK_GIDS_Modified_Data/12312024_Cluster_split_data/MetacycleDeSeq_Normalised_Cluster")
+
+
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+
+
+
+# Create a data frame for specified genes and their module colors for Clade 3 and clade 5
+gene_module_colors <- data.frame(
+  Gene = c("AT1G44000_1", "AT1G73870_1", "AT2G41250_1", "AT2G46830_1", "AT3G02380_1","AT3G13040_1", "AT4G16990_1", "AT5G45430_1", "AT5G64940_1",
+           "AT1G44000_10", "AT1G73870_10", "AT2G41250_10", "AT2G46830_10", "AT3G02380_10", "AT3G13040_10", "AT4G16990_10", "AT5G45430_10", "AT5G64940_10"),
+  Clade5_Color = c("turquoise", "black", "black", "black", "black", "black","turquoise", "turquoise","turquoise",NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  clade3_Color = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, "salmon", "salmon", "salmon", "salmon", "brown", "brown", "brown", "brown", "salmon"),
+  stringsAsFactors = FALSE
+)
+
+# Extract unique colors for file names
+colors <- unique(c(gene_module_colors$Clade5_Color[!is.na(gene_module_colors$Clade5_Color)],
+                   gene_module_colors$clade3_Color[!is.na(gene_module_colors$clade3_Color)]))
+
+# Create a mapping of colors to file names
+color_file_mapping <- list(
+  turquoise = "zScore_MEturquoise_0_6_df_0.05.csv",
+  black = "zScore_MEblack_0_6_df_0.05.csv",
+  salmon = "zScore_MEsalmon_0_6_df_0.05.csv",
+  brown = "zScore_MEbrown_0_6_df_0.05.csv"
+)
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path, genes_of_interest) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns. Handle missing columns gracefully.
+  selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore", "TCsd")
+  df_selected <- df %>%
+    select(any_of(selected_columns)) %>%
+    filter(GeneID %in% genes_of_interest)  # Filter for specified genes
+  
+  return(df_selected)
+}
+
+# Read and process each color dataset based on the mapping
+genes_of_interest_clade5 <- gene_module_colors$Gene[grepl("_1$", gene_module_colors$Gene)]
+genes_of_interest_clade3 <- gene_module_colors$Gene[grepl("_10$", gene_module_colors$Gene)]
+
+# Process data according to the colors
+MEturquoise_0_6_df <- process_data(color_file_mapping[["turquoise"]], genes_of_interest_clade5)
+MEblack_0_6_df <- process_data(color_file_mapping[["black"]], genes_of_interest_clade5)
+MEsalmon_0_6_df <- process_data(color_file_mapping[["salmon"]], genes_of_interest_clade3)
+MEbrown_0_6_df <- process_data(color_file_mapping[["brown"]], genes_of_interest_clade3)
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEturquoise_0_6_df,
+  MEblack_0_6_df,
+  MEsalmon_0_6_df,
+  MEbrown_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+# Ensure ReplicateGroup is a factor
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+# Separate data for Clade 3 and clade 5
+df_clade3 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade3_Color)
+df_clade5 <- df_combined %>% filter(Color.x %in% gene_module_colors$Clade5_Color)
+
+
+# Load necessary library
+library(dplyr)
+
+# Remove duplicate rows from df_clade3
+df_clade3_unique <- df_clade3 %>% distinct()
+
+# If you want to keep it in the original df_clade3 variable
+df_clade3 <- df_clade3 %>% distinct()
+
+df <- df_clade3
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores <- df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p <- ggplot(mean_z_scores, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "#A6D870", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 3",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p
+
+
+
+df2 <- df_clade5
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores2 <- df2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p2 <- ggplot(mean_z_scores2, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "darkturquoise", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 3",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p2
+
+
+# Summarize the data for Clade 3
+mean_z_scores_clade3 <- df_clade3 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 3")
+
+# Summarize the data for Clade 5
+mean_z_scores_clade5 <- df_clade5 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 5")
+
+
+# Combine the summaries into one data frame
+mean_z_scores_combined <- bind_rows(mean_z_scores_clade3, mean_z_scores_clade5)
+
+# Define your colors for each clade
+clade_colors <- c(
+  "Clade 3" = "#A6D870",  # Example color for Clade3
+  "Clade 5" = "darkturquoise"   # Example color for Clade5
+)
+
+
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  
+  geom_line(size = 1) +
+  
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  
+  labs(title = "Mean zScores for Clade 3 and Clade 5 of Nine Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  
+  theme_minimal() +
+  
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  ) +
+  
+  # Specify colors for both lines and ribbons
+  scale_color_manual(values = clade_colors) +  # Set colors for lines
+  scale_fill_manual(values = clade_colors)      # Set colors for ribbons
+
+# Print the combined plot
+print(p)
+
+# Create a data frame for specified genes and their module colors for clade 2 and clade 5
+gene_module_colors <- data.frame(
+  Gene = c("AT1G06040_1", "AT1G31330_1", "AT2G25080_1", "AT3G21400_1", "AT5G28060_1", "AT5G58870_1",
+           "AT1G06040_11", "AT1G31330_11", "AT2G25080_11", "AT3G21400_11", "AT5G28060_11", "AT5G58870_11"),
+  Clade5_Color = c("black", "black", "black", "turquoise", "black", "turquoise", NA, NA, NA, NA, NA, NA),
+  Clade2_Color = c(NA, NA, NA, NA, NA, NA, "blue", "blue", "blue", "lightcyan", "blue", "blue"),
+  stringsAsFactors = FALSE
+)
+
+# Extract unique colors for file names
+colors <- unique(c(gene_module_colors$Clade5_Color[!is.na(gene_module_colors$Clade5_Color)],
+                   gene_module_colors$Clade2_Color[!is.na(gene_module_colors$Clade2_Color)]))
+
+# Create a mapping of colors to file names
+color_file_mapping <- list(
+  black = "zScore_MEblack_0_6_df_0.05.csv",
+  blue = "zScore_MEblue_0_6_df_0.05.csv",
+  turquoise = "zScore_MEturquoise_0_6_df_0.05.csv",
+  lightcyan = "zScore_MElightcyan_0_6_df_0.05.csv",
+  blue = "zScore_MEblue_0_6_df_0.05.csv"
+)
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path, genes_of_interest) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns. Handle missing columns gracefully.
+  selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore", "TCsd")
+  df_selected <- df %>%
+    select(any_of(selected_columns)) %>%
+    filter(GeneID %in% genes_of_interest)  # Filter for specified genes
+  
+  return(df_selected)
+}
+
+# Read and process each color dataset based on the mapping
+genes_of_interest_clade5 <- gene_module_colors$Gene[grepl("_1$", gene_module_colors$Gene)]
+genes_of_interest_clade2 <- gene_module_colors$Gene[grepl("_11$", gene_module_colors$Gene)]
+
+# Process data according to the colors
+MEblack_0_6_df <- process_data(color_file_mapping[["black"]], genes_of_interest_clade5)
+MEblue_0_6_df <- process_data(color_file_mapping[["blue"]], genes_of_interest_clade2)
+MEturquoise_0_6_df <- process_data(color_file_mapping[["turquoise"]], genes_of_interest_clade5)
+MElightcyan_0_6_df <- process_data(color_file_mapping[["lightcyan"]], genes_of_interest_clade2)
+MEblue_0_6_df <- process_data(color_file_mapping[["blue"]], genes_of_interest_clade2)
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEblack_0_6_df,
+  MEblue_0_6_df,
+  MEturquoise_0_6_df,
+  MElightcyan_0_6_df,
+  MEblue_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+# Ensure ReplicateGroup is a factor
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+# Separate data for clade 2 and clade 5
+df_clade2 <- df_combined %>% filter(Color.x %in% gene_module_colors$Clade2_Color)
+df_clade5 <- df_combined %>% filter(Color.x %in% gene_module_colors$Clade5_Color)
+
+
+# Load necessary library
+library(dplyr)
+
+# Remove duplicate rows from df_clade2
+df_clade2_unique <- df_clade2 %>% distinct()
+
+# If you want to keep it in the original df_clade2 variable
+df_clade2 <- df_clade2 %>% distinct()
+
+df <- df_clade2
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores <- df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p <- ggplot(mean_z_scores, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "red", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 2",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p
+
+
+
+df2 <- df_clade5
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores2 <- df2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p2 <- ggplot(mean_z_scores2, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "darkturquoise", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 2",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p2
+
+
+# Summarize the data for Clade 2
+mean_z_scores_clade2 <- df_clade2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 2")
+
+# Summarize the data for Clade 5
+mean_z_scores_clade5 <- df_clade5 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 5")
+
+
+# Combine the summaries into one data frame
+mean_z_scores_combined <- bind_rows(mean_z_scores_clade2, mean_z_scores_clade5)
+
+# Plot both datasets together
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  labs(title = "Mean zScores for Clade 2 and Clade 5 of six Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the combined plot
+print(p)
+
+############################################################
+
+
+
+# Create a data frame for specified genes and their module colors for clade 4 and clade 1
+gene_module_colors <- data.frame(
+  Gene = c("AT2G35370_1", "AT3G11170_1", "AT4G10920_1", "AT4G17090_1", "AT4G21990_1", "AT5G56650_1",
+           "AT2G35370_11", "AT3G11170_11", "AT4G10920_11", "AT4G17090_11", "AT4G21990_11", "AT5G56650_11"),
+  clade4_Color = c("yellow", "yellow", "red", "greenyellow", "red", "greenyellow", NA, NA, NA, NA, NA, NA),
+  clade1_Color = c(NA, NA, NA, NA, NA, NA, "tan", "darkred", "pink", "darkred", "purple", "darkred"),
+  stringsAsFactors = FALSE
+)
+
+# Extract unique colors for file names
+colors <- unique(c(gene_module_colors$clade4_Color[!is.na(gene_module_colors$clade4_Color)],
+                   gene_module_colors$clade1_Color[!is.na(gene_module_colors$clade1_Color)]))
+
+# Create a mapping of colors to file names
+color_file_mapping <- list(
+  yellow = "zScore_MEyellow_0_6_df_0.05.csv",
+  red = "zScore_MEred_0_6_df_0.05.csv",
+  greenyellow = "zScore_MEgreenyellow_0_6_df_0.05.csv",
+  tan = "zScore_MEtan_0_6_df_0.05.csv",
+  darkred = "zScore_MEdarkred_0_6_df_0.05.csv",
+  pink = "zScore_MEpink_0_6_df_0.05.csv",
+  purple = "zScore_MEpurple_0_6_df_0.05.csv"
+  
+)
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path, genes_of_interest) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns. Handle missing columns gracefully.
+  selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore", "TCsd")
+  df_selected <- df %>%
+    select(any_of(selected_columns)) %>%
+    filter(GeneID %in% genes_of_interest)  # Filter for specified genes
+  
+  return(df_selected)
+}
+
+# Read and process each color dataset based on the mapping
+genes_of_interest_clade4 <- gene_module_colors$Gene[grepl("_1$", gene_module_colors$Gene)]
+genes_of_interest_clade1 <- gene_module_colors$Gene[grepl("_11$", gene_module_colors$Gene)]
+
+# Process data according to the colors
+MEyellow_0_6_df <- process_data(color_file_mapping[["yellow"]], genes_of_interest_clade4)
+MEred_0_6_df <- process_data(color_file_mapping[["red"]], genes_of_interest_clade4)
+MEgreenyellow_0_6_df <- process_data(color_file_mapping[["greenyellow"]], genes_of_interest_clade4)
+MEtan_0_6_df <- process_data(color_file_mapping[["tan"]], genes_of_interest_clade1)
+MEdarkred_0_6_df <- process_data(color_file_mapping[["darkred"]], genes_of_interest_clade1)
+MEpink_0_6_df <- process_data(color_file_mapping[["pink"]], genes_of_interest_clade1)
+MEpurple_0_6_df <- process_data(color_file_mapping[["purple"]], genes_of_interest_clade1)
+# Bind all data frames
+df_combined <- bind_rows(
+  MEyellow_0_6_df,
+  MEred_0_6_df,
+  MEgreenyellow_0_6_df,
+  MEtan_0_6_df,
+  MEdarkred_0_6_df,
+  MEpink_0_6_df,
+  MEpurple_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+# Ensure ReplicateGroup is a factor
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+# Separate data for clade 2 and clade 5
+df_clade1 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade1_Color)
+df_clade4 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade4_Color)
+
+
+# Load necessary library
+library(dplyr)
+
+# Remove duplicate rows from df_clade1
+df_clade1_unique <- df_clade1 %>% distinct()
+
+# If you want to keep it in the original df_clade1 variable
+df_clade1 <- df_clade1 %>% distinct()
+
+df <- df_clade1
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores <- df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p <- ggplot(mean_z_scores, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "blue", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 1",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p
+
+
+
+df2 <- df_clade4
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores2 <- df2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p2 <- ggplot(mean_z_scores2, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "purple", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 4",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p2
+
+
+# Summarize the data for Clade 2
+mean_z_scores_clade1 <- df_clade1 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 1")
+
+# Summarize the data for Clade 5
+mean_z_scores_clade4 <- df_clade4 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 4")
+
+
+# Combine the summaries into one data frame
+mean_z_scores_combined <- bind_rows(mean_z_scores_clade1, mean_z_scores_clade4)
+
+# Plot both datasets together
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  labs(title = "Mean  zScores for Clade 1 and Clade 4 of Six Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  scale_color_manual(values = c("Clade 1" = "blue", "Clade 4" = "purple")) +  # Set line colors
+  scale_fill_manual(values = c("Clade 1" = "blue", "Clade 4" = "purple")) +  # Set ribbon colors
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the combined plot
+print(p)
+##############################clade3 and clade2
+
+
+
+# Create a data frame for specified genes and their module colors for clade 2 and clade 5
+# Create a data frame for specified genes and their module colors for clade 2 and clade 5
+gene_module_colors <- data.frame(
+  Gene = c("AT1G03130_1", "AT1G13245_1", "AT1G29910_1", "AT1G29930_1", "AT1G61520_1", 
+           "AT2G34420_1", "AT2G46790_1", "AT3G54890_1", "AT3G59060_1", "AT3G61580_1", 
+           "AT4G19170_1", "AT4G38850_1", "AT5G02810_1", "AT5G18030_1", "AT5G54270_1", 
+           "AT5G62280_1", "AT5G64170_1",
+           "AT1G03130_11", "AT1G13245_11", "AT1G29910_11", "AT1G29930_11", "AT1G61520_11", 
+           "AT2G34420_11", "AT2G46790_11", "AT3G54890_11", "AT3G59060_11", "AT3G61580_11", 
+           "AT4G19170_11", "AT4G38850_11", "AT5G02810_11", "AT5G18030_11", "AT5G54270_11", 
+           "AT5G62280_11", "AT5G64170_11"),
+  
+  clade3_Color = c("brown", "brown", "brown", "brown", "brown", "brown", "salmon", "brown", 
+                   "salmon", "brown", "salmon", "brown", "brown", "brown", "brown", "brown","salmon", 
+                   NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  
+  clade2_Color = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, 
+                   "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", 
+                   "blue", "blue", "lightcyan", "lightcyan", "blue", "blue", "blue", "blue"),
+  
+  stringsAsFactors = FALSE
+)
+# Extract unique colors for file names
+colors <- unique(c(gene_module_colors$clade3_Color[!is.na(gene_module_colors$clade3_Color)],
+                   gene_module_colors$clade2_Color[!is.na(gene_module_colors$clade2_Color)]))
+
+# Create a mapping of colors to file names
+color_file_mapping <- list(
+  brown = "zScore_MEbrown_0_6_df_0.05.csv",
+  salmon = "zScore_MEsalmon_0_6_df_0.05.csv",
+  blue = "zScore_MEblue_0_6_df_0.05.csv",
+  tan = "zScore_MEtan_0_6_df_0.05.csv",
+  lightcyan = "zScore_MElightcyan_0_6_df_0.05.csv"
+)
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path, genes_of_interest) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns. Handle missing columns gracefully.
+  selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore", "TCsd")
+  df_selected <- df %>%
+    select(any_of(selected_columns)) %>%
+    filter(GeneID %in% genes_of_interest)  # Filter for specified genes
+  
+  return(df_selected)
+}
+
+# Read and process each color dataset based on the mapping
+genes_of_interest_clade3 <- gene_module_colors$Gene[grepl("_1$", gene_module_colors$Gene)]
+genes_of_interest_clade2 <- gene_module_colors$Gene[grepl("_11$", gene_module_colors$Gene)]
+
+# Process data according to the colors
+MEbrown_0_6_df <- process_data(color_file_mapping[["brown"]], genes_of_interest_clade3)
+MEsalmon_0_6_df <- process_data(color_file_mapping[["salmon"]], genes_of_interest_clade3)
+MEblue_0_6_df <- process_data(color_file_mapping[["blue"]], genes_of_interest_clade2)
+MElightcyan_0_6_df <- process_data(color_file_mapping[["lightcyan"]], genes_of_interest_clade2)
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEbrown_0_6_df,
+  MEsalmon_0_6_df,
+  MEblue_0_6_df,
+  MElightcyan_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+# Ensure ReplicateGroup is a factor
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+# Separate data for clade 2 and clade 5
+df_clade2 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade2_Color)
+df_clade3 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade3_Color)
+
+
+# Load necessary library
+library(dplyr)
+
+# Remove duplicate rows from df_clade2
+df_clade2_unique <- df_clade2 %>% distinct()
+
+# If you want to keep it in the original df_clade2 variable
+df_clade2 <- df_clade2 %>% distinct()
+
+df <- df_clade2
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores <- df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p <- ggplot(mean_z_scores, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "red", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 2",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p
+
+
+
+df2 <- df_clade3
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores2 <- df2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p2 <- ggplot(mean_z_scores2, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "darkgreen", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 3",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p2
+
+
+# Summarize the data for Clade 2
+mean_z_scores_clade2 <- df_clade2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 2")
+
+# Summarize the data for Clade 5
+mean_z_scores_clade3 <- df_clade3 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 3")
+
+
+# Combine the summaries into one data frame
+mean_z_scores_combined <- bind_rows(mean_z_scores_clade2, mean_z_scores_clade3)
+
+# Assuming you have already created the mean_z_scores_combined data frame
+
+# Assuming you have already created the mean_z_scores_combined data frame
+
+# Plot both datasets together
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  labs(title = "Mean  zScores for Clade 2 and Clade 3 of Seventeen Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  scale_color_manual(values = c("Clade 2" = "red", "Clade 3" = "darkgreen")) +  # Set line colors
+  scale_fill_manual(values = c("Clade 2" = "red", "Clade 3" = "darkgreen")) +  
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  )
+# Print the plot
+print(p)
+
+# Print the plot
+print(p)
+
+# Print the combined plot
+print(p)
+
+
+
+
+# Plot both datasets together
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  labs(title = "Mean  zScores for Clade 2 and Clade 3 of Seventeen Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  scale_color_manual(values = c("Clade 2" = "red", "Clade 3" = "darkgreen")) +  # Set line colors
+  scale_fill_manual(values = c("Clade 2" = "red", "Clade 3" = "darkgreen")) +  
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  )
+
+
+################clase3 vs clade5
+
+
+
+# Create a data frame for specified genes and their module colors for clade 2 and clade 5
+# Create a data frame for specified genes and their module colors for clade 2 and clade 5
+gene_module_colors <- data.frame(
+  Gene = c("AT1G14280_1", "AT1G16720_1", "AT1G73480_1", "AT1G73600_1", "AT2G30520_1", 
+           "AT2G31380_1", "AT2G41250_1", "AT2G46830_1", "AT3G19630_1", "AT5G67030_1",
+           "AT1G14280_11", "AT1G16720_11", "AT1G73480_11", "AT1G73600_11", "AT2G30520_11", 
+           "AT2G31380_11", "AT2G41250_11", "AT2G46830_11", "AT3G19630_11", "AT5G67030_11"),
+  
+  clade5_Color = c("black", "turquoise", "black", "grey60", "black", "black", "black", "black", 
+                   "turquoise", "turquoise", NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  
+  clade3_Color = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, 
+                   "brown", "salmon", "brown", "brown", "brown", "brown", "salmon", "salmon", "brown", 
+                   "salmon"),
+  
+  stringsAsFactors = FALSE
+)
+# Extract unique colors for file names
+colors <- unique(c(gene_module_colors$clade5_Color[!is.na(gene_module_colors$clade5_Color)],
+                   gene_module_colors$clade3_Color[!is.na(gene_module_colors$clade3_Color)]))
+
+# Create a mapping of colors to file names
+color_file_mapping <- list(
+  black = "zScore_MEblack_0_6_df_0.05.csv",
+  turquoise = "zScore_MEturquoise_0_6_df_0.05.csv",
+  grey60 = "zScore_MEgrey60_0_6_df_0.05.csv",
+  brown = "zScore_MEbrown_0_6_df_0.05.csv",
+  salmon = "zScore_MEsalmon_0_6_df_0.05.csv"
+)
+
+# Function to read data, transform, select columns, and return
+process_data <- function(file_path, genes_of_interest) {
+  df <- read_csv(file_path)
+  df <- transform(df, Color = Color.x)  # Create the Color column
+  
+  # Select only the desired columns. Handle missing columns gracefully.
+  selected_columns <- c("GeneID", "Color.x", "gid", "cluster", "ReplicateGroup", "AvgExprs", "TCavg", "zScore", "TCsd")
+  df_selected <- df %>%
+    select(any_of(selected_columns)) %>%
+    filter(GeneID %in% genes_of_interest)  # Filter for specified genes
+  
+  return(df_selected)
+}
+
+# Read and process each color dataset based on the mapping
+genes_of_interest_clade5 <- gene_module_colors$Gene[grepl("_1$", gene_module_colors$Gene)]
+genes_of_interest_clade3 <- gene_module_colors$Gene[grepl("_11$", gene_module_colors$Gene)]
+
+# Process data according to the colors
+MEblack_0_6_df <- process_data(color_file_mapping[["black"]], genes_of_interest_clade5)
+MEturquoise_0_6_df <- process_data(color_file_mapping[["turquoise"]], genes_of_interest_clade5)
+MEgrey60_0_6_df <- process_data(color_file_mapping[["grey60"]], genes_of_interest_clade5)
+MEbrown_0_6_df <- process_data(color_file_mapping[["brown"]], genes_of_interest_clade3)
+MEsalmon_0_6_df <- process_data(color_file_mapping[["salmon"]], genes_of_interest_clade3)
+
+
+# Bind all data frames
+df_combined <- bind_rows(
+  MEblack_0_6_df,
+  MEturquoise_0_6_df,
+  MEgrey60_0_6_df,
+  MEbrown_0_6_df,
+  MEsalmon_0_6_df
+)
+
+# Print the column names of the combined data frame to verify
+print(colnames(df_combined))
+
+# Ensure ReplicateGroup is a factor
+df_combined$ReplicateGroup <- factor(df_combined$ReplicateGroup, levels = unique(df_combined$ReplicateGroup))
+
+# Separate data for clade 2 and clade 5
+df_clade3 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade3_Color)
+df_clade5 <- df_combined %>% filter(Color.x %in% gene_module_colors$clade5_Color)
+
+# Remove duplicate rows from df_clade3
+df_clade5_unique <- df_clade5 %>% distinct()
+
+# If you want to keep it in the original df_clade3 variable
+df_clade5 <- df_clade5 %>% distinct()
+
+# Load necessary library
+library(dplyr)
+
+# Remove duplicate rows from df_clade3
+df_clade3_unique <- df_clade3 %>% distinct()
+
+# If you want to keep it in the original df_clade3 variable
+df_clade3 <- df_clade3 %>% distinct()
+
+df <- df_clade3
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores <- df %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p <- ggplot(mean_z_scores, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "darkgreen", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 3",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p
+
+
+
+df2 <- df_clade5
+
+# Assuming your data frame is named 'df_summary'
+# Step 1: Summarize the data to get the mean Z score and standard deviation
+mean_z_scores2 <- df2 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+p2 <- ggplot(mean_z_scores2, aes(x = ReplicateGroup, y = mean_zScore, group = 1)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore), fill = "turquoise", alpha = 0.2) +
+  labs(title = "Six Genes within Clade 5",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  
+  # Increase font size
+  theme(
+    axis.title = element_text(size = 44, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 36, face = "bold"),        # Axis text
+    plot.title = element_text(size = 36, face = "bold",  hjust = 0.5)  # Plot title (centered)
+  )
+p2
+
+
+# Summarize the data for Clade 2
+mean_z_scores_clade3 <- df_clade3 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 3")
+
+# Summarize the data for Clade 5
+mean_z_scores_clade5 <- df_clade5 %>%
+  group_by(ReplicateGroup) %>%
+  summarise(mean_zScore = mean(zScore, na.rm = TRUE),
+            sd_zScore = sd(zScore, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Clade = "Clade 5")
+
+
+# Combine the summaries into one data frame
+mean_z_scores_combined <- bind_rows(mean_z_scores_clade3, mean_z_scores_clade5)
+
+# Plot both datasets together
+p <- ggplot(mean_z_scores_combined, aes(x = ReplicateGroup, y = mean_zScore, group = Clade, color = Clade)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = mean_zScore - sd_zScore, ymax = mean_zScore + sd_zScore, fill = Clade), alpha = 0.2) +
+  labs(title = "Mean  zScores for Clade 3 and Clade 5 of Ten Genes",
+       x = "Replicate Group (Time Point)",
+       y = "Average Z Score") +
+  theme_minimal() +
+  scale_color_manual(values = c("Clade 3" = "darkgreen", "Clade 5" = "turquoise")) +  # Set line colors
+  scale_fill_manual(values = c("Clade 3" = "darkgreen", "Clade 5" = "turquoise")) +  # Set ribbon colors
+  theme(
+    axis.title = element_text(size = 14, face = "bold"),       # Axis titles
+    axis.text = element_text(size = 12, face = "bold"),        # Axis text
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)  # Plot title (centered)
+  )
+
+# Print the combined plot
+print(p)
+
+#######################################################
+
+
